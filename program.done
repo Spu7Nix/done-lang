@@ -1,0 +1,43 @@
+//comment
+
+/*
+    Expressions: 
+        number literal: 1, 2, 12678, -128.36
+        string literal: "hello"
+        variable: a
+        `the` syntax (the [type]): the number
+        function call ([expression] [function]): 10 doubled
+        function call with arguments ([expression] [function] [expressions separated by , or `and`]): 5 added with 10
+        pattern matching ([expression] is [pattern]): 10 is even
+*/
+
+//function definition
+
+//syntax: [type] [function name (verb in past tense) (may be multiple words, as long as none of them are keywords)] {[values]} := [expression]. 
+
+number doubled := the number multiplied by 2.
+
+a plus b where a is number, b is number
+
+//pattern definition
+
+// syntax: [type] is [pattern name] {[preposition] [values]} if [expression] 
+
+number is whole if the number is equal to the number rounded.
+
+number is even if the number divided by 2 is whole.
+
+number is odd if the number is not even.
+
+
+
+// iterators
+
+// map: [list] with each item [function]
+
+input processed := input converted to string split by "," with each item converted to number.
+
+// reduce: [list] reduced to [expression containing `item` and `next item`]
+
+list of number summed := the list reduced to item added with next item.
+
