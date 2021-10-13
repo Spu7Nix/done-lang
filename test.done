@@ -1,8 +1,3 @@
-A gaboozled with B where A is number and B is number := A multiplied by 2 and added with B
+Number A is equal to Number B if A subtracted by B is equal to 0.
 
-
-
-// A halved where A is list = items of A where the index of the item is less than the length of the list, collected
-
-list maximized := the list reduced to item if item is greater than next item else next item
-list sorted := items of the list where the item is not equal to list maximized, sorted, concatenated with the list maximized
+Number A is half of Number B if A doubled is equal to B.
