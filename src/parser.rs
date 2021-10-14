@@ -243,16 +243,20 @@ fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
 fn parse_expr<'a>(s: &'a [Token], state: &'a mut ParseState) -> Expr {
     let mut tokens = s.iter();
     let mut current_expr = match tokens.next().unwrap() {
-        Token::The(a) => Expr::The(state.get_type(SymbolType::from(*a))),
-        Token::Number(n) => Expr::Number(*n),
-        Token::StringLiteral(s) => Expr::Str(SymbolType::from(*s)),
-        Token::Symbol(_) => todo!(),
+        Token::The(a) => Some(Expr::The(state.get_type(SymbolType::from(*a)))),
+        Token::Number(n) => Some(Expr::Number(*n)),
+        Token::StringLiteral(s) => Some(Expr::Str(SymbolType::from(*s))),
+        Token::Symbol(_) => {
+            // prev
+            tokens = s.iter();
+            None
+        }
         Token::TypeName(_) => todo!(),
         a => panic!("unexpected {:?}", a),
     };
 
     loop {
-        current_expr = match tokens.next() {
+        current_expr = Some(match tokens.next() {
             Some(Token::Symbol(s)) => {
                 let mut signature = vec![SymbolType::from(*s)];
 
@@ -260,7 +264,7 @@ fn parse_expr<'a>(s: &'a [Token], state: &'a mut ParseState) -> Expr {
                     loop {
                         match b {
                             &FuncTree::Func(ptr) => {
-                                let mut args = vec![current_expr];
+                                let mut args = current_expr.into_iter().collect::<Vec<_>>();
                                 if state.func_map[ptr.0].0.args.len() == 2 {
                                     args.push(parse_expr(
                                         &tokens.clone().cloned().collect::<Vec<_>>(),
@@ -287,7 +291,7 @@ fn parse_expr<'a>(s: &'a [Token], state: &'a mut ParseState) -> Expr {
                 }
             }
             Some(a) => panic!("unexpected {:?}", a),
-            None => return current_expr,
-        };
+            None => return current_expr.unwrap(),
+        });
     }
 }
