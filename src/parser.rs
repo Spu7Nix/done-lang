@@ -84,17 +84,17 @@ pub fn lex(text: &str) -> Vec<Token> {
 }
 
 #[derive(PartialEq, Clone, Debug)]
-enum FuncTree {
+pub enum FuncTree {
     Func(FnPtr),
     Branches(HashMap<SymbolType, FuncTree>),
 }
 #[derive(Debug)]
 pub struct ParseState {
-    func_names: HashMap<SymbolType, FuncTree>,
+    pub func_names: HashMap<SymbolType, FuncTree>,
     type_count: u32,
     func_count: u32,
-    type_map: HashMap<SymbolType, Ty>,
-    func_map: HashMap<FnPtr, (FuncInfo, Expr)>,
+    pub type_map: HashMap<SymbolType, Ty>,
+    pub func_map: HashMap<FnPtr, (FuncInfo, Expr)>,
 }
 
 impl ParseState {
