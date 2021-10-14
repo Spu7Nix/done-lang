@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use logos::Logos;
 
+pub type SymbolType = String;
+
 #[derive(Logos, Debug, PartialEq, Eq)]
 enum LogosToken {
     //keywords
@@ -36,11 +38,11 @@ enum LogosToken {
     Symbol,
 
     #[error]
-    #[regex(r"[ \t\f]+|/\*[^*]*\*(([^/\*][^\*]*)?\*)*/|//[^\n]*", logos::skip)]
+    #[regex(r"[ \t\f\n\r]+|/\*[^*]*\*(([^/\*][^\*]*)?\*)*/|//[^\n]*", logos::skip)]
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token<'a> {
     The(&'a str),
     If,
@@ -82,31 +84,84 @@ pub fn lex(text: &str) -> Vec<Token> {
 }
 
 #[derive(PartialEq, Clone, Debug)]
+enum FuncTree {
+    Func(FnPtr),
+    Branches(HashMap<SymbolType, FuncTree>),
+}
+#[derive(Debug)]
+pub struct ParseState {
+    func_names: HashMap<SymbolType, FuncTree>,
+    type_count: u32,
+    func_count: u32,
+    type_map: HashMap<SymbolType, Ty>,
+    func_map: HashMap<FnPtr, (FuncInfo, Expr)>,
+}
+
+impl ParseState {
+    pub fn new() -> Self {
+        Self {
+            func_names: HashMap::new(),
+            type_count: 0,
+            func_count: 0,
+            type_map: HashMap::new(),
+            func_map: HashMap::new(),
+        }
+    }
+
+    pub fn get_type(&mut self, name: SymbolType) -> Ty {
+        *self.type_map.entry(name).or_insert({
+            self.type_count += 1;
+            Ty(self.type_count)
+        })
+    }
+
+    fn insert_func(&mut self, signature: FuncSignature, f: Expr) {
+        let mut current_branch = &mut self.func_names;
+        for name in &signature.name[..signature.name.len() - 1] {
+            current_branch = match current_branch
+                .entry(name.clone())
+                .or_insert_with(|| FuncTree::Branches(HashMap::new()))
+            {
+                FuncTree::Func(_) => panic!("Function already exists"),
+                FuncTree::Branches(b) => b,
+            };
+        }
+        self.func_count += 1;
+        self.func_map
+            .insert(FnPtr(self.func_count), (signature.info, f));
+        current_branch.insert(
+            signature.name.last().unwrap().clone(),
+            FuncTree::Func(FnPtr(self.func_count)),
+        );
+    }
+}
+
+#[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
+pub struct Ty(u32);
+
+#[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
+pub struct FnPtr(u32);
+
+#[derive(PartialEq, Clone, Debug)]
 pub enum Expr {
     Number(f64),
-    Str(String),
-    Call {
-        func: FuncSignature,
-        args: Vec<Expr>
-    },
-    The(String)
+    Str(SymbolType),
+    Call { func: FnPtr, args: Vec<Expr> },
+    The(Ty),
 }
-
-
-
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
-pub enum FuncSymbol {
-    Argument,
-    Symbol(String)
+pub struct FuncInfo {
+    args: Vec<Ty>,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
-pub struct FuncSignature(Vec<FuncSymbol>);
-#[derive(Debug)]
-pub struct Functions(HashMap<FuncSignature, Expr>);
+pub struct FuncSignature {
+    info: FuncInfo,
+    name: Vec<SymbolType>,
+}
 
-pub fn parse_mod(tokens: &[Token]) -> Functions {
-    let mut funcs = Functions(HashMap::new());
+pub fn parse_mod(tokens: &[Token]) -> ParseState {
+    let mut funcs = ParseState::new();
     let sentences = tokens.split(|a| *a == Token::Period);
     for s in sentences {
         if !s.is_empty() {
@@ -117,46 +172,101 @@ pub fn parse_mod(tokens: &[Token]) -> Functions {
 }
 
 fn split_at_first<'a>(tokens: &'a [Token], t: Token) -> (&'a [Token<'a>], &'a [Token<'a>]) {
-    let out = tokens.split_at(tokens.iter().position(|a | *a == t).unwrap());
+    let out = tokens.split_at(tokens.iter().position(|a| *a == t).unwrap());
     (out.0, &out.1[1..])
 }
 
-fn parse_sentence(s: &[Token], funcs: &mut Functions) {
+fn parse_sentence(s: &[Token], state: &mut ParseState) {
     let (def_part, main_part) = split_at_first(s, Token::Is);
 
-    match (def_part.len(), def_part[0]) {
+    match (def_part.len(), &def_part[0]) {
         (1, Token::TypeName(ty)) => {
             todo!();
             // pattern def
             let (pattern, condition) = split_at_first(s, Token::If);
-        },
+        }
         _ => {
             // func
-            let signature = parse_multi_word_def(def_part);
-            let f = parse_expr(main_part, funcs);
-            funcs.0.insert(signature.clone(), f);
+            let signature = parse_func_def(def_part, state);
+            let f = parse_expr(main_part, state);
+            state.insert_func(signature, f);
         }
     }
 }
 
-fn parse_multi_word_def<'a>(s: &'a [Token]) -> FuncSignature {
-    FuncSignature(s.iter().map(|a| match a {
-        Token::Symbol(s) => FuncSymbol::Symbol(s.to_string()),
-        Token::TypeName(_) => FuncSymbol::Argument,
-        _ => panic!("unexpected")
-    }).collect())
+fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
+    let mut args = Vec::new();
+    if let Token::TypeName(t) = &s[0] {
+        args.push(state.get_type(SymbolType::from(*t)));
+    }
+    let mut i = args.len(); // is start arg: 1, else 0
+    let mut name = Vec::new();
+    while let Some(Token::Symbol(s)) = s.get(i) {
+        name.push(SymbolType::from(*s));
+        i += 1;
+    }
+
+    if !args.is_empty() {
+        if let Token::TypeName(t) = &s[0] {
+            args.push(state.get_type(SymbolType::from(*t)));
+        }
+    }
+
+    FuncSignature {
+        info: FuncInfo { args },
+        name,
+        //args: todo!(),
+    }
 }
 
-
-
-fn parse_expr<'a>(s: &'a [Token], funcs: &'a Functions) -> Expr {
-    
-    match s[0] {
-        Token::The(a) => Expr::The(a.to_string()),
-        Token::Number(n) => Expr::Number(n),
-        Token::StringLiteral(s) => Expr::Str(s.to_string()),
+fn parse_expr<'a>(s: &'a [Token], state: &'a mut ParseState) -> Expr {
+    let mut tokens = s.iter();
+    let mut current_expr = match tokens.next().unwrap() {
+        Token::The(a) => Expr::The(state.get_type(SymbolType::from(*a))),
+        Token::Number(n) => Expr::Number(*n),
+        Token::StringLiteral(s) => Expr::Str(SymbolType::from(*s)),
         Token::Symbol(_) => todo!(),
         Token::TypeName(_) => todo!(),
-        a => panic!("unexpected {:?}", a)
+        a => panic!("unexpected {:?}", a),
+    };
+
+    loop {
+        current_expr = match tokens.next() {
+            Some(Token::Symbol(s)) => {
+                let mut signature = vec![SymbolType::from(*s)];
+
+                if let Some(mut b) = state.func_names.get(*s) {
+                    loop {
+                        match b {
+                            &FuncTree::Func(ptr) => {
+                                let mut args = vec![current_expr];
+                                if state.func_map[&ptr].0.args.len() == 2 {
+                                    args.push(parse_expr(
+                                        &tokens.clone().cloned().collect::<Vec<_>>(),
+                                        state,
+                                    ));
+                                    return Expr::Call { func: ptr, args };
+                                }
+                                break Expr::Call { func: ptr, args };
+                            }
+                            FuncTree::Branches(new_map) => match tokens.next() {
+                                Some(Token::Symbol(s)) => {
+                                    signature.push(SymbolType::from(*s));
+                                    match new_map.get(*s) {
+                                        Some(b2) => b = b2,
+                                        None => panic!("undefined function: {:?}", signature),
+                                    }
+                                }
+                                a => panic!("expected symbol, found: {:?}", a),
+                            },
+                        }
+                    }
+                } else {
+                    panic!("undefined function start: {}", s)
+                }
+            }
+            Some(a) => panic!("unexpected {:?}", a),
+            None => return current_expr,
+        };
     }
 }
