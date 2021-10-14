@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use logos::Logos;
 
+use crate::interpreter::Value;
+
 pub type SymbolType = String;
 
 #[derive(Logos, Debug, PartialEq, Eq)]
@@ -92,20 +94,40 @@ pub enum FuncTree {
 pub struct ParseState {
     pub func_names: HashMap<SymbolType, FuncTree>,
     type_count: u32,
-    func_count: u32,
     pub type_map: HashMap<SymbolType, Ty>,
-    pub func_map: HashMap<FnPtr, (FuncInfo, Expr)>,
+    pub func_map: Vec<(FuncInfo, FuncContent)>,
+}
+
+use crate::builtin::BUILTINS;
+
+#[derive(Debug, Clone)]
+pub enum FuncContent {
+    Custom(Expr),
+    Builtin(fn(Vec<Value>) -> Value),
 }
 
 impl ParseState {
     pub fn new() -> Self {
-        Self {
+        let mut out = Self {
             func_names: HashMap::new(),
             type_count: 0,
-            func_count: 0,
             type_map: HashMap::new(),
-            func_map: HashMap::new(),
+            func_map: Vec::new(),
+        };
+        for (name, types, f) in BUILTINS {
+            let signature = FuncSignature {
+                info: FuncInfo {
+                    args: types
+                        .iter()
+                        .map(|a| out.get_type(SymbolType::from(*a)))
+                        .collect(),
+                },
+                name: name.iter().map(|a| SymbolType::from(*a)).collect(),
+            };
+
+            out.insert_func(signature, FuncContent::Builtin(*f))
         }
+        out
     }
 
     pub fn get_type(&mut self, name: SymbolType) -> Ty {
@@ -115,7 +137,7 @@ impl ParseState {
         })
     }
 
-    fn insert_func(&mut self, signature: FuncSignature, f: Expr) {
+    fn insert_func(&mut self, signature: FuncSignature, f: FuncContent) {
         let mut current_branch = &mut self.func_names;
         for name in &signature.name[..signature.name.len() - 1] {
             current_branch = match current_branch
@@ -126,12 +148,11 @@ impl ParseState {
                 FuncTree::Branches(b) => b,
             };
         }
-        self.func_count += 1;
-        self.func_map
-            .insert(FnPtr(self.func_count), (signature.info, f));
+
+        self.func_map.push((signature.info, f));
         current_branch.insert(
             signature.name.last().unwrap().clone(),
-            FuncTree::Func(FnPtr(self.func_count)),
+            FuncTree::Func(FnPtr(self.func_map.len() - 1)),
         );
     }
 }
@@ -140,7 +161,7 @@ impl ParseState {
 pub struct Ty(u32);
 
 #[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
-pub struct FnPtr(u32);
+pub struct FnPtr(pub usize);
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expr {
@@ -189,7 +210,7 @@ fn parse_sentence(s: &[Token], state: &mut ParseState) {
             // func
             let signature = parse_func_def(def_part, state);
             let f = parse_expr(main_part, state);
-            state.insert_func(signature, f);
+            state.insert_func(signature, FuncContent::Custom(f));
         }
     }
 }
@@ -240,7 +261,7 @@ fn parse_expr<'a>(s: &'a [Token], state: &'a mut ParseState) -> Expr {
                         match b {
                             &FuncTree::Func(ptr) => {
                                 let mut args = vec![current_expr];
-                                if state.func_map[&ptr].0.args.len() == 2 {
+                                if state.func_map[ptr.0].0.args.len() == 2 {
                                     args.push(parse_expr(
                                         &tokens.clone().cloned().collect::<Vec<_>>(),
                                         state,
