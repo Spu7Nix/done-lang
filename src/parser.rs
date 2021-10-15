@@ -4,7 +4,7 @@ use logos::Logos;
 
 use crate::interpreter::Value;
 
-pub type SymbolType = String;
+pub type Symbol = String;
 
 #[derive(Logos, Debug, PartialEq, Eq)]
 enum LogosToken {
@@ -21,8 +21,8 @@ enum LogosToken {
     #[token(".")]
     Period,
 
-    #[token(":=")]
-    Define,
+    #[token(":")]
+    Colon,
 
     #[token(",")]
     Comma,
@@ -50,7 +50,7 @@ pub enum Token<'a> {
     If,
     Is,
     Period,
-    Define,
+    Colon,
     Comma,
     Number(f64),
     StringLiteral(&'a str),
@@ -70,7 +70,7 @@ pub fn lex(text: &str) -> Vec<Token> {
             LogosToken::If => Token::If,
             LogosToken::Is => Token::Is,
             LogosToken::Period => Token::Period,
-            LogosToken::Define => Token::Define,
+            LogosToken::Colon => Token::Colon,
             LogosToken::Comma => Token::Comma,
             LogosToken::Number => Token::Number(iter.slice().parse().unwrap()),
             LogosToken::StringLiteral => Token::StringLiteral({
@@ -88,14 +88,15 @@ pub fn lex(text: &str) -> Vec<Token> {
 #[derive(PartialEq, Clone, Debug)]
 pub enum FuncTree {
     Func(FnPtr),
-    Branches(HashMap<SymbolType, FuncTree>),
+    Branches(HashMap<Symbol, FuncTree>),
 }
 #[derive(Debug)]
 pub struct ParseState {
-    pub func_names: HashMap<SymbolType, FuncTree>,
+    pub func_names: HashMap<Symbol, FuncTree>,
     type_count: u32,
-    pub type_map: HashMap<SymbolType, Ty>,
+    pub type_map: HashMap<Symbol, Ty>,
     pub func_map: Vec<(FuncInfo, FuncContent)>,
+    pub scope_args: Vec<Ty>,
 }
 
 use crate::builtin::BUILTINS;
@@ -113,16 +114,17 @@ impl ParseState {
             type_count: 0,
             type_map: HashMap::new(),
             func_map: Vec::new(),
+            scope_args: Vec::new(),
         };
         for (name, types, f) in BUILTINS {
             let signature = FuncSignature {
                 info: FuncInfo {
                     args: types
                         .iter()
-                        .map(|a| out.get_type(SymbolType::from(*a)))
+                        .map(|a| out.get_type(Symbol::from(*a)))
                         .collect(),
                 },
-                name: name.iter().map(|a| SymbolType::from(*a)).collect(),
+                name: name.iter().map(|a| Symbol::from(*a)).collect(),
             };
 
             out.insert_func(signature, FuncContent::Builtin(*f))
@@ -130,11 +132,15 @@ impl ParseState {
         out
     }
 
-    pub fn get_type(&mut self, name: SymbolType) -> Ty {
+    pub fn get_type(&mut self, name: Symbol) -> Ty {
         *self.type_map.entry(name).or_insert({
             self.type_count += 1;
             Ty(self.type_count)
         })
+    }
+
+    pub fn set_scope_args(&mut self, func: &FuncSignature) {
+        self.scope_args = func.info.args.clone();
     }
 
     fn insert_func(&mut self, signature: FuncSignature, f: FuncContent) {
@@ -166,9 +172,9 @@ pub struct FnPtr(pub usize);
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expr {
     Number(f64),
-    Str(SymbolType),
+    Str(Symbol),
     Call { func: FnPtr, args: Vec<Expr> },
-    The(Ty),
+    ArgRef(usize),
 }
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub struct FuncInfo {
@@ -178,7 +184,7 @@ pub struct FuncInfo {
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub struct FuncSignature {
     info: FuncInfo,
-    name: Vec<SymbolType>,
+    name: Vec<Symbol>,
 }
 
 pub fn parse_mod(tokens: &[Token]) -> ParseState {
@@ -209,7 +215,8 @@ fn parse_sentence(s: &[Token], state: &mut ParseState) {
         _ => {
             // func
             let signature = parse_func_def(def_part, state);
-            let f = parse_expr(main_part, state);
+            state.set_scope_args(&signature);
+            let f = parse_value(&mut main_part.iter(), state, ExprParseAmount::Exhaustive);
             state.insert_func(signature, FuncContent::Custom(f));
         }
     }
@@ -218,18 +225,18 @@ fn parse_sentence(s: &[Token], state: &mut ParseState) {
 fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
     let mut args = Vec::new();
     if let Token::TypeName(t) = &s[0] {
-        args.push(state.get_type(SymbolType::from(*t)));
+        args.push(state.get_type(Symbol::from(*t)));
     }
     let mut i = args.len(); // is start arg: 1, else 0
     let mut name = Vec::new();
     while let Some(Token::Symbol(s)) = s.get(i) {
-        name.push(SymbolType::from(*s));
+        name.push(Symbol::from(*s));
         i += 1;
     }
 
     if !args.is_empty() {
-        if let Token::TypeName(t) = &s[0] {
-            args.push(state.get_type(SymbolType::from(*t)));
+        if let Some(Token::TypeName(t)) = &s.get(i) {
+            args.push(state.get_type(Symbol::from(*t)));
         }
     }
 
@@ -240,43 +247,78 @@ fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
     }
 }
 
-fn parse_expr<'a>(s: &'a [Token], state: &'a mut ParseState) -> Expr {
-    let mut tokens = s.iter();
-    let mut current_expr = match tokens.next().unwrap() {
-        Token::The(a) => Some(Expr::The(state.get_type(SymbolType::from(*a)))),
-        Token::Number(n) => Some(Expr::Number(*n)),
-        Token::StringLiteral(s) => Some(Expr::Str(SymbolType::from(*s))),
-        Token::Symbol(_) => {
-            // prev
-            tokens = s.iter();
-            None
+#[derive(PartialEq, Eq)]
+enum ExprParseAmount {
+    Value,
+    Exhaustive,
+}
+
+fn parse_value<'a>(
+    tokens: &mut core::slice::Iter<Token>,
+    state: &'a mut ParseState,
+    amount: ExprParseAmount,
+) -> Expr {
+    let exhaustive = amount == ExprParseAmount::Exhaustive
+        || if *tokens.clone().next().unwrap() == Token::Colon {
+            tokens.next();
+            true
+        } else {
+            false
+        };
+    let current_expr = match tokens.next().unwrap() {
+        Token::The(a) => {
+            let typ = state.get_type(Symbol::from(*a));
+            let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
+                if *a == typ {
+                    Some(i)
+                } else {
+                    None
+                }
+            });
+            let index = list.next().expect("No argument of this type");
+            if list.next() != None {
+                panic!("ambiguous arg ref")
+            }
+            Expr::ArgRef(index)
         }
+        Token::Number(n) => (Expr::Number(*n)),
+        Token::StringLiteral(s) => (Expr::Str(Symbol::from(*s))),
+        Token::Symbol(_) => parse_expression(None, tokens, state),
         Token::TypeName(_) => todo!(),
         a => panic!("unexpected {:?}", a),
     };
+    if exhaustive {
+        parse_expression(Some(current_expr), tokens, state)
+    } else {
+        current_expr
+    }
+}
 
+fn parse_expression(
+    mut current_expr: Option<Expr>,
+    tokens: &mut core::slice::Iter<Token>,
+    state: &mut ParseState,
+) -> Expr {
     loop {
         current_expr = Some(match tokens.next() {
             Some(Token::Symbol(s)) => {
-                let mut signature = vec![SymbolType::from(*s)];
+                let mut signature = vec![Symbol::from(*s)];
 
                 if let Some(mut b) = state.func_names.get(*s) {
                     loop {
                         match b {
                             &FuncTree::Func(ptr) => {
                                 let mut args = current_expr.into_iter().collect::<Vec<_>>();
+
                                 if state.func_map[ptr.0].0.args.len() == 2 {
-                                    args.push(parse_expr(
-                                        &tokens.clone().cloned().collect::<Vec<_>>(),
-                                        state,
-                                    ));
-                                    return Expr::Call { func: ptr, args };
+                                    args.push(parse_value(tokens, state, ExprParseAmount::Value));
+                                    //return Expr::Call { func: ptr, args };
                                 }
                                 break Expr::Call { func: ptr, args };
                             }
                             FuncTree::Branches(new_map) => match tokens.next() {
                                 Some(Token::Symbol(s)) => {
-                                    signature.push(SymbolType::from(*s));
+                                    signature.push(Symbol::from(*s));
                                     match new_map.get(*s) {
                                         Some(b2) => b = b2,
                                         None => panic!("undefined function: {:?}", signature),
@@ -288,6 +330,13 @@ fn parse_expr<'a>(s: &'a [Token], state: &'a mut ParseState) -> Expr {
                     }
                 } else {
                     panic!("undefined function start: {}", s)
+                }
+            }
+            Some(Token::Comma) => {
+                if let Some(e) = current_expr {
+                    parse_expression(Some(e), tokens, state)
+                } else {
+                    panic!("unexpected comma")
                 }
             }
             Some(a) => panic!("unexpected {:?}", a),

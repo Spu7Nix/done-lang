@@ -1,7 +1,5 @@
 use std::fs;
 
-use crate::parser::parse_mod;
-
 mod builtin;
 mod interpreter;
 mod parser;

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::parser::Expr;
+use crate::parser::{Expr, FuncInfo};
 use crate::parser::{FuncContent, FuncTree, Token};
 
 use crate::parser::ParseState;
@@ -12,34 +12,52 @@ pub enum Value {
     List(Vec<Value>),
 }
 
+#[derive(Debug, Clone)]
+pub struct State<'a> {
+    pub func_map: &'a [(FuncInfo, FuncContent)],
+}
+
+impl<'a> State<'a> {
+    pub fn new(parsed: &'a ParseState) -> Self {
+        Self {
+            func_map: &parsed.func_map,
+        }
+    }
+}
+
 pub fn interpret(parsed: ParseState) -> Value {
+    let mut state = State::new(&parsed);
     match parsed.func_names.get("output") {
         Some(FuncTree::Func(id)) => evaluate(
-            match parsed.func_map[id.0].1.clone() {
+            match state.func_map[id.0].1.clone() {
                 FuncContent::Custom(e) => e,
                 FuncContent::Builtin(_) => unreachable!(),
             },
-            &parsed,
+            &mut state,
+            &[],
         ),
         _ => panic!("output function not found"),
     }
 }
 
-fn evaluate(expr: Expr, parsed: &ParseState) -> Value {
+fn evaluate(expr: Expr, state: &mut State, args: &[Value]) -> Value {
     match expr {
         Expr::Number(n) => Value::Number(n),
         Expr::Str(s) => Value::Str(s),
-        Expr::Call { func, args } => {
-            let evaled = args
+        Expr::Call {
+            func,
+            args: call_args,
+        } => {
+            let evaled = call_args
                 .into_iter()
-                .map(|a| evaluate(a, parsed))
+                .map(|a| evaluate(a, state, args))
                 .collect::<Vec<_>>();
 
-            match &parsed.func_map[func.0] {
+            match &state.func_map[func.0] {
                 (_, FuncContent::Builtin(b)) => b(evaled),
-                (_, FuncContent::Custom(e)) => evaluate(e.clone(), parsed),
+                (_, FuncContent::Custom(e)) => evaluate(e.clone(), state, &evaled),
             }
         }
-        Expr::The(_) => todo!(),
+        Expr::ArgRef(i) => args[i].clone(),
     }
 }
