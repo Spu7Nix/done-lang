@@ -1,10 +1,11 @@
+use core::panic;
 use std::collections::HashMap;
 
 use logos::Logos;
 
 use crate::interpreter::Value;
-
-pub type Symbol = String;
+use internment::LocalIntern;
+pub type Symbol = LocalIntern<String>;
 
 #[derive(Logos, Debug, PartialEq, Eq)]
 enum LogosToken {
@@ -45,17 +46,52 @@ enum LogosToken {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Token<'a> {
-    The(&'a str),
+pub enum Token {
+    The(Symbol),
     If,
     Is,
     Period,
     Colon,
     Comma,
     Number(f64),
-    StringLiteral(&'a str),
-    Symbol(&'a str),
-    TypeName(&'a str),
+    StringLiteral(Symbol),
+    Symbol(Symbol),
+    TypeName(Symbol),
+}
+
+#[derive(Debug)]
+pub struct Tokens {
+    vec: Vec<Token>,
+    index: usize,
+}
+
+impl Tokens {
+    pub fn new(vec: &[Token]) -> Self {
+        Self {
+            vec: vec.to_vec(),
+            index: 0,
+        }
+    }
+
+    pub fn next(&mut self) -> Option<Token> {
+        if self.index < self.vec.len() {
+            let out = self.vec[self.index].clone();
+            self.index += 1;
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    pub fn previous(&mut self) -> Option<Token> {
+        if self.index > 0 {
+            self.index -= 1;
+            let out = self.vec[self.index].clone();
+            Some(out)
+        } else {
+            None
+        }
+    }
 }
 
 pub fn lex(text: &str) -> Vec<Token> {
@@ -65,7 +101,7 @@ pub fn lex(text: &str) -> Vec<Token> {
         tokens.push(match token {
             LogosToken::The => Token::The({
                 assert_eq!(iter.next().unwrap(), LogosToken::TypeName);
-                iter.slice()
+                Symbol::from(iter.slice())
             }),
             LogosToken::If => Token::If,
             LogosToken::Is => Token::Is,
@@ -75,11 +111,11 @@ pub fn lex(text: &str) -> Vec<Token> {
             LogosToken::Number => Token::Number(iter.slice().parse().unwrap()),
             LogosToken::StringLiteral => Token::StringLiteral({
                 let slice = iter.slice();
-                &slice[1..(slice.len() - 1)]
+                Symbol::from(&slice[1..(slice.len() - 1)])
             }),
-            LogosToken::Symbol => Token::Symbol(iter.slice()),
+            LogosToken::Symbol => Token::Symbol(Symbol::from(iter.slice())),
             LogosToken::Error => todo!(),
-            LogosToken::TypeName => Token::TypeName(iter.slice()),
+            LogosToken::TypeName => Token::TypeName(Symbol::from(iter.slice())),
         })
     }
     tokens
@@ -147,7 +183,7 @@ impl ParseState {
         let mut current_branch = &mut self.func_names;
         for name in &signature.name[..signature.name.len() - 1] {
             current_branch = match current_branch
-                .entry(name.clone())
+                .entry(*name)
                 .or_insert_with(|| FuncTree::Branches(HashMap::new()))
             {
                 FuncTree::Func(_) => panic!("Function already exists"),
@@ -157,7 +193,7 @@ impl ParseState {
 
         self.func_map.push((signature.info, f));
         current_branch.insert(
-            signature.name.last().unwrap().clone(),
+            *signature.name.last().unwrap(),
             FuncTree::Func(FnPtr(self.func_map.len() - 1)),
         );
     }
@@ -189,54 +225,68 @@ pub struct FuncSignature {
 
 pub fn parse_mod(tokens: &[Token]) -> ParseState {
     let mut funcs = ParseState::new();
-    let sentences = tokens.split(|a| *a == Token::Period);
-    for s in sentences {
-        if !s.is_empty() {
-            parse_sentence(s, &mut funcs);
-        }
+    let mut tokens = Tokens::new(tokens);
+    while tokens.next().is_some() {
+        tokens.previous();
+        parse_sentence(&mut tokens, &mut funcs);
     }
+
     funcs
 }
 
-fn split_at_first<'a>(tokens: &'a [Token], t: Token) -> (&'a [Token<'a>], &'a [Token<'a>]) {
-    let out = tokens.split_at(tokens.iter().position(|a| *a == t).unwrap());
-    (out.0, &out.1[1..])
-}
+// fn split_at_first<'a>(tokens: &'a [Token], t: Token) -> (&'a [Token<'a>], &'a [Token<'a>]) {
+//     let out = tokens.split_at(tokens.iter().position(|a| *a == t).unwrap());
+//     (out.0, &out.1[1..])
+// }
 
-fn parse_sentence(s: &[Token], state: &mut ParseState) {
-    let (def_part, main_part) = split_at_first(s, Token::Is);
+fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
+    let first_type = tokens.next();
 
-    match (def_part.len(), &def_part[0]) {
-        (1, Token::TypeName(ty)) => {
+    match (first_type, tokens.next()) {
+        (Some(Token::TypeName(t)), Some(Token::Is)) => {
             todo!();
             // pattern def
-            let (pattern, condition) = split_at_first(s, Token::If);
+            //let (pattern, condition) = split_at_first(tokens, Token::If);
         }
         _ => {
+            tokens.previous();
+            tokens.previous();
+            let mut def_part = Vec::new();
+            loop {
+                match tokens.next() {
+                    Some(Token::Is) => break,
+                    Some(a) => def_part.push(a),
+                    None => panic!("expected type name, symbol or \"is\""),
+                }
+            }
             // func
-            let signature = parse_func_def(def_part, state);
+            let signature = parse_func_def(&def_part, state);
             state.set_scope_args(&signature);
-            let f = parse_value(&mut main_part.iter(), state, ExprParseAmount::Exhaustive);
+            let f = parse_value(tokens, state, ExprParseAmount::Exhaustive);
             state.insert_func(signature, FuncContent::Custom(f));
         }
+    };
+
+    if tokens.next() != Some(Token::Period) {
+        panic!("Expected period")
     }
 }
 
 fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
     let mut args = Vec::new();
     if let Token::TypeName(t) = &s[0] {
-        args.push(state.get_type(Symbol::from(*t)));
+        args.push(state.get_type(*t));
     }
     let mut i = args.len(); // is start arg: 1, else 0
     let mut name = Vec::new();
     while let Some(Token::Symbol(s)) = s.get(i) {
-        name.push(Symbol::from(*s));
+        name.push(*s);
         i += 1;
     }
 
     if !args.is_empty() {
         if let Some(Token::TypeName(t)) = &s.get(i) {
-            args.push(state.get_type(Symbol::from(*t)));
+            args.push(state.get_type(*t));
         }
     }
 
@@ -253,21 +303,17 @@ enum ExprParseAmount {
     Exhaustive,
 }
 
-fn parse_value<'a>(
-    tokens: &mut core::slice::Iter<Token>,
-    state: &'a mut ParseState,
-    amount: ExprParseAmount,
-) -> Expr {
+fn parse_value(tokens: &mut Tokens, state: &mut ParseState, amount: ExprParseAmount) -> Expr {
     let exhaustive = amount == ExprParseAmount::Exhaustive
-        || if *tokens.clone().next().unwrap() == Token::Colon {
-            tokens.next();
+        || if tokens.next() == Some(Token::Colon) {
             true
         } else {
+            tokens.previous();
             false
         };
-    let current_expr = match tokens.next().unwrap() {
-        Token::The(a) => {
-            let typ = state.get_type(Symbol::from(*a));
+    let current_expr = match tokens.next() {
+        Some(Token::The(a)) => {
+            let typ = state.get_type(a);
             let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
                 if *a == typ {
                     Some(i)
@@ -281,10 +327,10 @@ fn parse_value<'a>(
             }
             Expr::ArgRef(index)
         }
-        Token::Number(n) => (Expr::Number(*n)),
-        Token::StringLiteral(s) => (Expr::Str(Symbol::from(*s))),
-        Token::Symbol(_) => parse_expression(None, tokens, state),
-        Token::TypeName(_) => todo!(),
+        Some(Token::Number(n)) => (Expr::Number(n)),
+        Some(Token::StringLiteral(s)) => (Expr::Str(s)),
+        Some(Token::Symbol(_)) => parse_expression(None, tokens, state),
+        Some(Token::TypeName(_)) => todo!(),
         a => panic!("unexpected {:?}", a),
     };
     if exhaustive {
@@ -296,15 +342,15 @@ fn parse_value<'a>(
 
 fn parse_expression(
     mut current_expr: Option<Expr>,
-    tokens: &mut core::slice::Iter<Token>,
+    tokens: &mut Tokens,
     state: &mut ParseState,
 ) -> Expr {
     loop {
         current_expr = Some(match tokens.next() {
             Some(Token::Symbol(s)) => {
-                let mut signature = vec![Symbol::from(*s)];
+                let mut signature = vec![s];
 
-                if let Some(mut b) = state.func_names.get(*s) {
+                if let Some(mut b) = state.func_names.get(&s) {
                     loop {
                         match b {
                             &FuncTree::Func(ptr) => {
@@ -318,8 +364,8 @@ fn parse_expression(
                             }
                             FuncTree::Branches(new_map) => match tokens.next() {
                                 Some(Token::Symbol(s)) => {
-                                    signature.push(Symbol::from(*s));
-                                    match new_map.get(*s) {
+                                    signature.push(s);
+                                    match new_map.get(&s) {
                                         Some(b2) => b = b2,
                                         None => panic!("undefined function: {:?}", signature),
                                     }
@@ -339,8 +385,11 @@ fn parse_expression(
                     panic!("unexpected comma")
                 }
             }
-            Some(a) => panic!("unexpected {:?}", a),
-            None => return current_expr.unwrap(),
+            Some(Token::Period) => {
+                tokens.previous();
+                return current_expr.unwrap();
+            }
+            a => panic!("unexpected {:?}", a),
         });
     }
 }

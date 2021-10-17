@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use internment::LocalIntern;
 
 use crate::parser::{Expr, FuncInfo};
-use crate::parser::{FuncContent, FuncTree, Token};
+use crate::parser::{FuncContent, FuncTree};
 
 use crate::parser::ParseState;
 
@@ -27,7 +27,8 @@ impl<'a> State<'a> {
 
 pub fn interpret(parsed: ParseState) -> Value {
     let mut state = State::new(&parsed);
-    match parsed.func_names.get("output") {
+    //dbg!(&parsed.func_names);
+    match parsed.func_names.get(&LocalIntern::from("output")) {
         Some(FuncTree::Func(id)) => evaluate(
             match state.func_map[id.0].1.clone() {
                 FuncContent::Custom(e) => e,
@@ -43,7 +44,7 @@ pub fn interpret(parsed: ParseState) -> Value {
 fn evaluate(expr: Expr, state: &mut State, args: &[Value]) -> Value {
     match expr {
         Expr::Number(n) => Value::Number(n),
-        Expr::Str(s) => Value::Str(s),
+        Expr::Str(s) => Value::Str(s.to_string()),
         Expr::Call {
             func,
             args: call_args,
