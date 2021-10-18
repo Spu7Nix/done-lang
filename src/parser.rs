@@ -28,6 +28,15 @@ enum LogosToken {
     #[token(",")]
     Comma,
 
+    #[token("and")]
+    And,
+
+    #[token("or")]
+    Or,
+
+    #[token("not")]
+    Not,
+
     #[regex(r"[0-9]+(\.[0-9]+)?", priority = 1)]
     Number,
 
@@ -53,6 +62,9 @@ pub enum Token {
     Period,
     Colon,
     Comma,
+    And,
+    Or,
+    Not,
     Number(f64),
     StringLiteral(Symbol),
     Symbol(Symbol),
@@ -116,26 +128,73 @@ pub fn lex(text: &str) -> Vec<Token> {
             LogosToken::Symbol => Token::Symbol(Symbol::from(iter.slice())),
             LogosToken::Error => todo!(),
             LogosToken::TypeName => Token::TypeName(Symbol::from(iter.slice())),
+            LogosToken::And => Token::And,
+            LogosToken::Or => Token::Or,
+            LogosToken::Not => Token::Not,
         })
     }
     tokens
 }
 
 #[derive(PartialEq, Clone, Debug)]
-pub enum FuncTree {
-    Func(FnPtr),
-    Branches(HashMap<Symbol, FuncTree>),
+pub enum WordTree<T> {
+    Leaf(T),
+    Branches(HashMap<Symbol, WordTree<T>>),
 }
+
+impl<T> WordTree<T> {
+    fn new() -> WordTree<T> {
+        WordTree::Branches(HashMap::new())
+    }
+
+    pub fn mut_branches(&mut self) -> &mut HashMap<Symbol, WordTree<T>> {
+        match self {
+            WordTree::Leaf(_) => unreachable!(),
+            WordTree::Branches(b) => b,
+        }
+    }
+    pub fn branches(&self) -> &HashMap<Symbol, WordTree<T>> {
+        match self {
+            WordTree::Leaf(_) => unreachable!(),
+            WordTree::Branches(b) => b,
+        }
+    }
+
+    pub fn insert(&mut self, symbols: Vec<Symbol>, f: T) {
+        let mut current_branch = self.mut_branches();
+        for name in &symbols[..symbols.len() - 1] {
+            current_branch = match current_branch
+                .entry(*name)
+                .or_insert_with(|| WordTree::Branches(HashMap::new()))
+            {
+                WordTree::Leaf(_) => panic!("Function already exists"),
+                WordTree::Branches(b) => b,
+            };
+        }
+
+        current_branch.insert(*symbols.last().unwrap(), WordTree::Leaf(f));
+    }
+}
+#[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
+pub struct Ty(u32);
+
+#[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
+pub struct FnPtr(pub usize);
+
+#[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
+pub struct PatPtr(pub usize);
 #[derive(Debug)]
 pub struct ParseState {
-    pub func_names: HashMap<Symbol, FuncTree>,
+    pub func_names: WordTree<FnPtr>,
+    pub pat_names: WordTree<PatPtr>,
     type_count: u32,
     pub type_map: HashMap<Symbol, Ty>,
     pub func_map: Vec<(FuncInfo, FuncContent)>,
+    pub pat_map: Vec<(FuncInfo, PatContent)>,
     pub scope_args: Vec<Ty>,
 }
 
-use crate::builtin::BUILTINS;
+use crate::builtin::{BUILTIN_FUNCS, BUILTIN_PATTERNS};
 
 #[derive(Debug, Clone)]
 pub enum FuncContent {
@@ -143,16 +202,24 @@ pub enum FuncContent {
     Builtin(fn(Vec<Value>) -> Value),
 }
 
+#[derive(Debug, Clone)]
+pub enum PatContent {
+    Custom(Expr),
+    Builtin(fn(Vec<Value>) -> bool),
+}
+
 impl ParseState {
     pub fn new() -> Self {
         let mut out = Self {
-            func_names: HashMap::new(),
+            func_names: WordTree::new(),
             type_count: 0,
             type_map: HashMap::new(),
             func_map: Vec::new(),
             scope_args: Vec::new(),
+            pat_names: WordTree::new(),
+            pat_map: Vec::new(),
         };
-        for (name, types, f) in BUILTINS {
+        for (name, types, f) in BUILTIN_FUNCS {
             let signature = FuncSignature {
                 info: FuncInfo {
                     args: types
@@ -164,6 +231,20 @@ impl ParseState {
             };
 
             out.insert_func(signature, FuncContent::Builtin(*f))
+        }
+
+        for (name, types, f) in BUILTIN_PATTERNS {
+            let signature = FuncSignature {
+                info: FuncInfo {
+                    args: types
+                        .iter()
+                        .map(|a| out.get_type(Symbol::from(*a)))
+                        .collect(),
+                },
+                name: name.iter().map(|a| Symbol::from(*a)).collect(),
+            };
+
+            out.insert_pat(signature, PatContent::Builtin(*f))
         }
         out
     }
@@ -180,38 +261,42 @@ impl ParseState {
     }
 
     fn insert_func(&mut self, signature: FuncSignature, f: FuncContent) {
-        let mut current_branch = &mut self.func_names;
-        for name in &signature.name[..signature.name.len() - 1] {
-            current_branch = match current_branch
-                .entry(*name)
-                .or_insert_with(|| FuncTree::Branches(HashMap::new()))
-            {
-                FuncTree::Func(_) => panic!("Function already exists"),
-                FuncTree::Branches(b) => b,
-            };
-        }
-
         self.func_map.push((signature.info, f));
-        current_branch.insert(
-            *signature.name.last().unwrap(),
-            FuncTree::Func(FnPtr(self.func_map.len() - 1)),
-        );
+        self.func_names
+            .insert(signature.name, FnPtr(self.func_map.len() - 1));
+    }
+
+    fn insert_pat(&mut self, signature: FuncSignature, f: PatContent) {
+        self.pat_map.push((signature.info, f));
+        self.pat_names
+            .insert(signature.name, PatPtr(self.func_map.len() - 1));
     }
 }
-
-#[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
-pub struct Ty(u32);
-
-#[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
-pub struct FnPtr(pub usize);
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Expr {
     Number(f64),
     Str(Symbol),
-    Call { func: FnPtr, args: Vec<Expr> },
+    Call {
+        func: FnPtr,
+        args: Vec<Expr>,
+    },
+    If {
+        condition: PatternExpr,
+        then: Box<Expr>,
+        otherwise: Box<Expr>,
+    },
     ArgRef(usize),
 }
+
+#[derive(PartialEq, Clone, Debug)]
+pub enum PatternExpr {
+    Match { pat: PatPtr, args: Vec<Expr> },
+    Not(Box<PatternExpr>),
+    And(Box<PatternExpr>, Box<PatternExpr>),
+    Or(Box<PatternExpr>, Box<PatternExpr>),
+}
+
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub struct FuncInfo {
     args: Vec<Ty>,
@@ -234,6 +319,15 @@ pub fn parse_mod(tokens: &[Token]) -> ParseState {
     funcs
 }
 
+macro_rules! expect {
+    ($token:pat, $tokens:expr) => {
+        match $tokens.next() {
+            Some($token) => (),
+            a => panic!(concat!("Expected", stringify!($token), ", found {:?}"), a),
+        }
+    };
+}
+
 // fn split_at_first<'a>(tokens: &'a [Token], t: Token) -> (&'a [Token<'a>], &'a [Token<'a>]) {
 //     let out = tokens.split_at(tokens.iter().position(|a| *a == t).unwrap());
 //     (out.0, &out.1[1..])
@@ -244,9 +338,19 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
 
     match (first_type, tokens.next()) {
         (Some(Token::TypeName(t)), Some(Token::Is)) => {
-            todo!();
-            // pattern def
-            //let (pattern, condition) = split_at_first(tokens, Token::If);
+            let first_type = state.get_type(t);
+            let mut def_part = Vec::new();
+            loop {
+                match tokens.next() {
+                    Some(Token::If) => break,
+                    Some(a) => def_part.push(a),
+                    None => panic!("expected type name, symbol or \"is\""),
+                }
+            }
+            let signature = parse_pat_def(&def_part, state, first_type);
+            state.set_scope_args(&signature);
+            let condition = parse_value(tokens, state, ExprParseAmount::Exhaustive);
+            state.insert_pat(signature, PatContent::Custom(condition));
         }
         _ => {
             tokens.previous();
@@ -267,9 +371,7 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
         }
     };
 
-    if tokens.next() != Some(Token::Period) {
-        panic!("Expected period")
-    }
+    expect!(Token::Period, tokens);
 }
 
 fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
@@ -278,6 +380,28 @@ fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
         args.push(state.get_type(*t));
     }
     let mut i = args.len(); // is start arg: 1, else 0
+    let mut name = Vec::new();
+    while let Some(Token::Symbol(s)) = s.get(i) {
+        name.push(*s);
+        i += 1;
+    }
+
+    if !args.is_empty() {
+        if let Some(Token::TypeName(t)) = &s.get(i) {
+            args.push(state.get_type(*t));
+        }
+    }
+
+    FuncSignature {
+        info: FuncInfo { args },
+        name,
+        //args: todo!(),
+    }
+}
+
+fn parse_pat_def(s: &[Token], state: &mut ParseState, first_type: Ty) -> FuncSignature {
+    let mut args = vec![first_type];
+    let mut i = 0;
     let mut name = Vec::new();
     while let Some(Token::Symbol(s)) = s.get(i) {
         name.push(*s);
@@ -350,10 +474,10 @@ fn parse_expression(
             Some(Token::Symbol(s)) => {
                 let mut signature = vec![s];
 
-                if let Some(mut b) = state.func_names.get(&s) {
+                if let Some(mut b) = state.func_names.branches().get(&s) {
                     loop {
                         match b {
-                            &FuncTree::Func(ptr) => {
+                            &WordTree::Leaf(ptr) => {
                                 let mut args = current_expr.into_iter().collect::<Vec<_>>();
 
                                 if state.func_map[ptr.0].0.args.len() == 2 {
@@ -362,7 +486,7 @@ fn parse_expression(
                                 }
                                 break Expr::Call { func: ptr, args };
                             }
-                            FuncTree::Branches(new_map) => match tokens.next() {
+                            WordTree::Branches(new_map) => match tokens.next() {
                                 Some(Token::Symbol(s)) => {
                                     signature.push(s);
                                     match new_map.get(&s) {
@@ -385,11 +509,17 @@ fn parse_expression(
                     panic!("unexpected comma")
                 }
             }
-            Some(Token::Period) => {
+            Some(_) => {
                 tokens.previous();
                 return current_expr.unwrap();
             }
-            a => panic!("unexpected {:?}", a),
+            None => panic!("unexpected end of input"),
         });
     }
+}
+
+fn parse_pattern_expr(tokens: &mut Tokens, state: &mut ParseState) -> PatternExpr {
+    let value = parse_value(tokens, state, ExprParseAmount::Exhaustive);
+    expect!(Token::Is, tokens);
+    todo!()
 }

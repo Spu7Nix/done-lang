@@ -1,7 +1,7 @@
 use internment::LocalIntern;
 
 use crate::parser::{Expr, FuncInfo};
-use crate::parser::{FuncContent, FuncTree};
+use crate::parser::{FuncContent, WordTree};
 
 use crate::parser::ParseState;
 
@@ -28,8 +28,12 @@ impl<'a> State<'a> {
 pub fn interpret(parsed: ParseState) -> Value {
     let mut state = State::new(&parsed);
     //dbg!(&parsed.func_names);
-    match parsed.func_names.get(&LocalIntern::from("output")) {
-        Some(FuncTree::Func(id)) => evaluate(
+    match parsed
+        .func_names
+        .branches()
+        .get(&LocalIntern::from("output"))
+    {
+        Some(WordTree::Leaf(id)) => evaluate(
             match state.func_map[id.0].1.clone() {
                 FuncContent::Custom(e) => e,
                 FuncContent::Builtin(_) => unreachable!(),
@@ -60,5 +64,10 @@ fn evaluate(expr: Expr, state: &mut State, args: &[Value]) -> Value {
             }
         }
         Expr::ArgRef(i) => args[i].clone(),
+        Expr::If {
+            condition,
+            then,
+            otherwise,
+        } => todo!(),
     }
 }
