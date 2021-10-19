@@ -99,14 +99,10 @@ impl Tokens {
         }
     }
 
-    pub fn previous(&mut self) -> Option<Token> {
-        if self.index > 0 {
+    pub fn previous(&mut self) {
+       
             self.index -= 1;
-            let out = self.vec[self.index].clone();
-            Some(out)
-        } else {
-            None
-        }
+            
     }
 }
 
@@ -213,12 +209,14 @@ use crate::builtin::{BUILTIN_FUNCS, BUILTIN_PATTERNS};
 pub enum FuncContent {
     Custom(Expr),
     Builtin(fn(Vec<Value>) -> Value),
+    Uninitialized,
 }
 
 #[derive(Debug, Clone)]
 pub enum PatContent {
     Custom(PatternExpr),
     Builtin(fn(Vec<Value>) -> bool),
+    Uninitialized,
 }
 
 impl ParseState {
@@ -243,7 +241,8 @@ impl ParseState {
                 name: name.iter().map(|a| Symbol::from(*a)).collect(),
             };
 
-            out.insert_func(signature, FuncContent::Builtin(*f))
+            let index = out.insert_func(signature);
+            out.func_map[index.0].1 = FuncContent::Builtin(*f);
         }
 
         for (name, types, f) in BUILTIN_PATTERNS {
@@ -256,8 +255,9 @@ impl ParseState {
                 },
                 name: name.iter().map(|a| Symbol::from(*a)).collect(),
             };
-
-            out.insert_pat(signature, PatContent::Builtin(*f))
+            let index = out.insert_pat(signature);
+            out.pat_map[index.0].1 = PatContent::Builtin(*f);
+            
         }
         out
     }
@@ -273,17 +273,18 @@ impl ParseState {
         self.scope_args = func.info.args.clone();
     }
 
-    fn insert_func(&mut self, signature: FuncSignature, f: FuncContent) {
-        self.func_map.push((signature.info, f));
-        
-            (*self.names
-                .access(signature.name)).perfectum = Some(FnPtr(self.func_map.len() - 1));
+    fn insert_func(&mut self, signature: FuncSignature) -> FnPtr {
+        (*self.names
+            .access(signature.name)).perfectum = Some(FnPtr(self.func_map.len()));
+        self.func_map.push((signature.info, FuncContent::Uninitialized));
+        FnPtr(self.func_map.len() - 1)
     }
 
-    fn insert_pat(&mut self, signature: FuncSignature, f: PatContent) {
-        self.pat_map.push((signature.info, f));
+    fn insert_pat(&mut self, signature: FuncSignature) -> PatPtr {
         (*self.names
-            .access(signature.name)).pattern = Some(PatPtr(self.pat_map.len() - 1));
+            .access(signature.name)).pattern = Some(PatPtr(self.pat_map.len()));
+        self.pat_map.push((signature.info, PatContent::Uninitialized));
+        PatPtr(self.pat_map.len() - 1)
     }
 }
 
@@ -337,7 +338,7 @@ macro_rules! expect {
     ($token:pat, $tokens:expr) => {
         match $tokens.next() {
             Some($token) => (),
-            a => panic!(concat!("Expected", stringify!($token), ", found {:?}"), a),
+            a => panic!(concat!("Expected ", stringify!($token), ", found {:?}"), a),
         }
     };
 }
@@ -362,9 +363,11 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
                 }
             }
             let signature = parse_pat_def(&def_part, state, first_type);
+            let index = state.insert_pat(signature.clone());
             state.set_scope_args(&signature);
             let condition = parse_pattern_expr(tokens, state);
-            state.insert_pat(signature, PatContent::Custom(condition));
+            
+            state.pat_map[index.0].1 = PatContent::Custom(condition);
         }
         _ => {
             tokens.previous();
@@ -379,9 +382,10 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
             }
             // func
             let signature = parse_func_def(&def_part, state);
+            let index = state.insert_func(signature.clone());
             state.set_scope_args(&signature);
             let f = parse_value(tokens, state, ExprParseAmount::Exhaustive);
-            state.insert_func(signature, FuncContent::Custom(f));
+            state.func_map[index.0].1 = FuncContent::Custom(f);
         }
     };
 
@@ -512,7 +516,8 @@ fn parse_expression(
                     Some(Token::Comma) => (),
                     _ => {
                         tokens.previous();
-                        match tokens.previous() {
+                        tokens.previous();
+                        match tokens.next() {
                             Some(Token::Comma) => (),
                             _ => panic!("expected comma")
                         }

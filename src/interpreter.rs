@@ -39,6 +39,7 @@ pub fn interpret(parsed: ParseState) -> Value {
             match state.func_map[id.0].1.clone() {
                 FuncContent::Custom(e) => e,
                 FuncContent::Builtin(_) => unreachable!(),
+                FuncContent::Uninitialized => unreachable!(),
             },
             &mut state,
             &[],
@@ -63,6 +64,7 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
             match &state.func_map[func.0] {
                 (_, FuncContent::Builtin(b)) => b(evaled),
                 (_, FuncContent::Custom(e)) => evaluate_expr(e.clone(), state, &evaled),
+                (_, FuncContent::Uninitialized) => unreachable!()
             }
         }
         Expr::ArgRef(i) => args[i].clone(),
@@ -91,6 +93,7 @@ fn evaluate_pattern_expr(expr: PatternExpr, state: &mut State, args: &[Value]) -
             match &state.pat_map[pat.0].1 {
                 PatContent::Custom(p) => evaluate_pattern_expr(p.clone(), state, &evaled),
                 PatContent::Builtin(b) => b(evaled),
+                PatContent::Uninitialized => unreachable!(),
             }
         },
         PatternExpr::Not(_) => todo!(),
