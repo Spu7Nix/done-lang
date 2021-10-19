@@ -136,43 +136,52 @@ pub fn lex(text: &str) -> Vec<Token> {
     tokens
 }
 
-#[derive(PartialEq, Clone, Debug)]
-pub enum WordTree<T> {
-    Leaf(T),
-    Branches(HashMap<Symbol, WordTree<T>>),
+#[derive(PartialEq, Clone, Debug, Copy)]
+pub struct NamedFunc {
+    pub pattern: Option<PatPtr>,
+    pub perfectum: Option<FnPtr>,
 }
 
-impl<T> WordTree<T> {
-    fn new() -> WordTree<T> {
+#[derive(PartialEq, Clone, Debug)]
+pub enum WordTree {
+    Leaf(NamedFunc),
+    Branches(HashMap<Symbol, WordTree>),
+}
+
+impl WordTree {
+    fn new() -> WordTree {
         WordTree::Branches(HashMap::new())
     }
 
-    pub fn mut_branches(&mut self) -> &mut HashMap<Symbol, WordTree<T>> {
+    pub fn mut_branches(&mut self) -> &mut HashMap<Symbol, WordTree> {
         match self {
             WordTree::Leaf(_) => unreachable!(),
             WordTree::Branches(b) => b,
         }
     }
-    pub fn branches(&self) -> &HashMap<Symbol, WordTree<T>> {
+    pub fn branches(&self) -> &HashMap<Symbol, WordTree> {
         match self {
             WordTree::Leaf(_) => unreachable!(),
             WordTree::Branches(b) => b,
         }
     }
 
-    pub fn insert(&mut self, symbols: Vec<Symbol>, f: T) {
+    pub fn access(&mut self, symbols: Vec<Symbol>) -> &mut NamedFunc {
         let mut current_branch = self.mut_branches();
         for name in &symbols[..symbols.len() - 1] {
             current_branch = match current_branch
                 .entry(*name)
                 .or_insert_with(|| WordTree::Branches(HashMap::new()))
             {
-                WordTree::Leaf(_) => panic!("Function already exists"),
+                WordTree::Leaf(_) => panic!("Name already exists"),
                 WordTree::Branches(b) => b,
             };
         }
-
-        current_branch.insert(*symbols.last().unwrap(), WordTree::Leaf(f));
+        
+        match current_branch.entry(*symbols.last().unwrap()).or_insert(WordTree::Leaf(NamedFunc { pattern: None, perfectum: None })) {
+            WordTree::Leaf(l) => l,
+            WordTree::Branches(_) => panic!("name too short"),
+        }
     }
 }
 #[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
@@ -185,8 +194,7 @@ pub struct FnPtr(pub usize);
 pub struct PatPtr(pub usize);
 #[derive(Debug)]
 pub struct ParseState {
-    pub func_names: WordTree<FnPtr>,
-    pub pat_names: WordTree<PatPtr>,
+    pub names: WordTree,
     type_count: u32,
     pub type_map: HashMap<Symbol, Ty>,
     pub func_map: Vec<(FuncInfo, FuncContent)>,
@@ -204,19 +212,19 @@ pub enum FuncContent {
 
 #[derive(Debug, Clone)]
 pub enum PatContent {
-    Custom(Expr),
+    Custom(PatternExpr),
     Builtin(fn(Vec<Value>) -> bool),
 }
 
 impl ParseState {
     pub fn new() -> Self {
         let mut out = Self {
-            func_names: WordTree::new(),
+            names: WordTree::new(),
             type_count: 0,
             type_map: HashMap::new(),
             func_map: Vec::new(),
             scope_args: Vec::new(),
-            pat_names: WordTree::new(),
+            
             pat_map: Vec::new(),
         };
         for (name, types, f) in BUILTIN_FUNCS {
@@ -262,14 +270,15 @@ impl ParseState {
 
     fn insert_func(&mut self, signature: FuncSignature, f: FuncContent) {
         self.func_map.push((signature.info, f));
-        self.func_names
-            .insert(signature.name, FnPtr(self.func_map.len() - 1));
+        
+            (*self.names
+                .access(signature.name)).perfectum = Some(FnPtr(self.func_map.len() - 1));
     }
 
     fn insert_pat(&mut self, signature: FuncSignature, f: PatContent) {
         self.pat_map.push((signature.info, f));
-        self.pat_names
-            .insert(signature.name, PatPtr(self.func_map.len() - 1));
+        (*self.names
+            .access(signature.name)).pattern = Some(PatPtr(self.pat_map.len() - 1));
     }
 }
 
@@ -349,7 +358,8 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
             }
             let signature = parse_pat_def(&def_part, state, first_type);
             state.set_scope_args(&signature);
-            let condition = parse_value(tokens, state, ExprParseAmount::Exhaustive);
+            let condition = parse_pattern_expr(tokens, state);
+            dbg!(&signature, &condition);
             state.insert_pat(signature, PatContent::Custom(condition));
         }
         _ => {
@@ -472,35 +482,15 @@ fn parse_expression(
     loop {
         current_expr = Some(match tokens.next() {
             Some(Token::Symbol(s)) => {
-                let mut signature = vec![s];
+                tokens.previous();
+                let mut args = current_expr.into_iter().collect::<Vec<_>>();
 
-                if let Some(mut b) = state.func_names.branches().get(&s) {
-                    loop {
-                        match b {
-                            &WordTree::Leaf(ptr) => {
-                                let mut args = current_expr.into_iter().collect::<Vec<_>>();
+                let ptr = parse_multi_symbol_name(state, tokens).perfectum.expect("no function with this name");
 
-                                if state.func_map[ptr.0].0.args.len() == 2 {
-                                    args.push(parse_value(tokens, state, ExprParseAmount::Value));
-                                    //return Expr::Call { func: ptr, args };
-                                }
-                                break Expr::Call { func: ptr, args };
-                            }
-                            WordTree::Branches(new_map) => match tokens.next() {
-                                Some(Token::Symbol(s)) => {
-                                    signature.push(s);
-                                    match new_map.get(&s) {
-                                        Some(b2) => b = b2,
-                                        None => panic!("undefined function: {:?}", signature),
-                                    }
-                                }
-                                a => panic!("expected symbol, found: {:?}", a),
-                            },
-                        }
-                    }
-                } else {
-                    panic!("undefined function start: {}", s)
+                if state.func_map[ptr.0].0.args.len() == 2 {
+                    args.push(parse_value(tokens, state, ExprParseAmount::Value)); 
                 }
+                Expr::Call { func: ptr, args }
             }
             Some(Token::Comma) => {
                 if let Some(e) = current_expr {
@@ -518,8 +508,44 @@ fn parse_expression(
     }
 }
 
+fn parse_multi_symbol_name(state: &mut ParseState, tokens: &mut Tokens) -> NamedFunc {
+    let mut signature = Vec::new();
+    let start_symbol = if let Some(Token::Symbol(s)) = tokens.next() {
+        s
+    } else { panic!("expected symbol")};
+    if let Some(mut b) = state.names.branches().get(&start_symbol) {
+        loop {
+            match b {
+                &WordTree::Leaf(ptr) => {
+                    
+                    break ptr
+                }
+                WordTree::Branches(new_map) => match tokens.next() {
+                    Some(Token::Symbol(s)) => {
+                        signature.push(s);
+                        match new_map.get(&s) {
+                            Some(b2) => b = b2,
+                            None => panic!("undefined function: {:?}", signature),
+                        }
+                    }
+                    a => panic!("expected symbol, found: {:?}", a),
+                },
+            }
+        }
+    } else {
+        panic!("undefined function start: {}", start_symbol)
+    }
+}
+
 fn parse_pattern_expr(tokens: &mut Tokens, state: &mut ParseState) -> PatternExpr {
     let value = parse_value(tokens, state, ExprParseAmount::Exhaustive);
     expect!(Token::Is, tokens);
-    todo!()
+    let mut args = vec![value];
+
+    let ptr = parse_multi_symbol_name(state, tokens).pattern.expect("no pattern with this name");
+
+    if state.pat_map[ptr.0].0.args.len() == 2 {
+        args.push(parse_value(tokens, state, ExprParseAmount::Exhaustive)); 
+    }
+    PatternExpr::Match { pat: ptr, args }
 }

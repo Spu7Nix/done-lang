@@ -1,6 +1,6 @@
 use internment::LocalIntern;
 
-use crate::parser::{Expr, FuncInfo};
+use crate::parser::{Expr, FuncInfo, NamedFunc};
 use crate::parser::{FuncContent, WordTree};
 
 use crate::parser::ParseState;
@@ -29,11 +29,11 @@ pub fn interpret(parsed: ParseState) -> Value {
     let mut state = State::new(&parsed);
     //dbg!(&parsed.func_names);
     match parsed
-        .func_names
+        .names
         .branches()
         .get(&LocalIntern::from("output"))
     {
-        Some(WordTree::Leaf(id)) => evaluate(
+        Some(WordTree::Leaf(NamedFunc {perfectum: Some(id), ..})) => evaluate(
             match state.func_map[id.0].1.clone() {
                 FuncContent::Custom(e) => e,
                 FuncContent::Builtin(_) => unreachable!(),
