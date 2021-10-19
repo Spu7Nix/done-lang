@@ -16,6 +16,9 @@ enum LogosToken {
     #[token("if")]
     If,
 
+    #[token("otherwise")]
+    Otherwise,
+
     #[token("is")]
     Is,
 
@@ -65,6 +68,7 @@ pub enum Token {
     And,
     Or,
     Not,
+    Otherwise,
     Number(f64),
     StringLiteral(Symbol),
     Symbol(Symbol),
@@ -116,6 +120,7 @@ pub fn lex(text: &str) -> Vec<Token> {
                 Symbol::from(iter.slice())
             }),
             LogosToken::If => Token::If,
+            LogosToken::Otherwise => Token::Otherwise,
             LogosToken::Is => Token::Is,
             LogosToken::Period => Token::Period,
             LogosToken::Colon => Token::Colon,
@@ -359,7 +364,6 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
             let signature = parse_pat_def(&def_part, state, first_type);
             state.set_scope_args(&signature);
             let condition = parse_pattern_expr(tokens, state);
-            dbg!(&signature, &condition);
             state.insert_pat(signature, PatContent::Custom(condition));
         }
         _ => {
@@ -463,7 +467,10 @@ fn parse_value(tokens: &mut Tokens, state: &mut ParseState, amount: ExprParseAmo
         }
         Some(Token::Number(n)) => (Expr::Number(n)),
         Some(Token::StringLiteral(s)) => (Expr::Str(s)),
-        Some(Token::Symbol(_)) => parse_expression(None, tokens, state),
+        Some(Token::Symbol(_)) => {
+            tokens.previous();
+            return parse_expression(None, tokens, state)
+        },
         Some(Token::TypeName(_)) => todo!(),
         a => panic!("unexpected {:?}", a),
     };
@@ -481,7 +488,7 @@ fn parse_expression(
 ) -> Expr {
     loop {
         current_expr = Some(match tokens.next() {
-            Some(Token::Symbol(s)) => {
+            Some(Token::Symbol(_)) => {
                 tokens.previous();
                 let mut args = current_expr.into_iter().collect::<Vec<_>>();
 
@@ -499,9 +506,25 @@ fn parse_expression(
                     panic!("unexpected comma")
                 }
             }
-            Some(_) => {
+            Some(Token::If) => {
+                let condition = parse_pattern_expr(tokens, state);
+                match tokens.next() {
+                    Some(Token::Comma) => (),
+                    _ => {
+                        tokens.previous();
+                        match tokens.previous() {
+                            Some(Token::Comma) => (),
+                            _ => panic!("expected comma")
+                        }
+                    }
+                };
+                expect!(Token::Otherwise, tokens);
+                let otherwise = parse_value(tokens, state, ExprParseAmount::Exhaustive);
+                Expr::If { condition, then: current_expr.unwrap().into(), otherwise: otherwise.into() }
+            }
+            Some(a) => {
                 tokens.previous();
-                return current_expr.unwrap();
+                return current_expr.expect(&format!("unexpected {:?}", a));
             }
             None => panic!("unexpected end of input"),
         });

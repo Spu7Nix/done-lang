@@ -1,1 +1,6 @@
 number is round if the number is equal to the number rounded.
+number is even if the number divided by 2 is round.
+
+n is 5.
+number halved is the number divided by 2.
+output is n halved if n is even, otherwise n multiplied by 3, added with 1.
