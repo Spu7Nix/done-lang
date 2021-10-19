@@ -306,8 +306,7 @@ pub enum Expr {
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum PatternExpr {
-    Match { pat: PatPtr, args: Vec<Expr> },
-    Not(Box<PatternExpr>),
+    Match { pat: PatPtr, args: Vec<Expr>, not: bool },
     And(Box<PatternExpr>, Box<PatternExpr>),
     Or(Box<PatternExpr>, Box<PatternExpr>),
 }
@@ -568,6 +567,12 @@ fn parse_multi_symbol_name(state: &mut ParseState, tokens: &mut Tokens) -> Named
 fn parse_pattern_expr(tokens: &mut Tokens, state: &mut ParseState) -> PatternExpr {
     let value = parse_value(tokens, state, ExprParseAmount::Exhaustive);
     expect!(Token::Is, tokens);
+    let not = if let Some(Token::Not) = tokens.next() {
+        true
+    } else {
+        tokens.previous();
+        false
+    };
     let mut args = vec![value];
 
     let ptr = parse_multi_symbol_name(state, tokens).pattern.expect("no pattern with this name");
@@ -575,5 +580,5 @@ fn parse_pattern_expr(tokens: &mut Tokens, state: &mut ParseState) -> PatternExp
     if state.pat_map[ptr.0].0.args.len() == 2 {
         args.push(parse_value(tokens, state, ExprParseAmount::Exhaustive)); 
     }
-    PatternExpr::Match { pat: ptr, args }
+    PatternExpr::Match { pat: ptr, args, not }
 }

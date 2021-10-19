@@ -85,18 +85,22 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
 
 fn evaluate_pattern_expr(expr: PatternExpr, state: &mut State, args: &[Value]) -> bool {
     match expr {
-        PatternExpr::Match { pat, args: call_args } => {
+        PatternExpr::Match { pat, args: call_args, not } => {
             let evaled = call_args
                 .into_iter()
                 .map(|a| evaluate_expr(a, state, args))
                 .collect::<Vec<_>>();
-            match &state.pat_map[pat.0].1 {
+            let result = match &state.pat_map[pat.0].1 {
                 PatContent::Custom(p) => evaluate_pattern_expr(p.clone(), state, &evaled),
                 PatContent::Builtin(b) => b(evaled),
                 PatContent::Uninitialized => unreachable!(),
+            };
+            if not {
+                !result
+            } else {
+                result
             }
         },
-        PatternExpr::Not(_) => todo!(),
         PatternExpr::And(_, _) => todo!(),
         PatternExpr::Or(_, _) => todo!(),
     }

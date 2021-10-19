@@ -1,2 +1,6 @@
-number fibonaccified is 0 if the number is equal to 0, otherwise 1 if the number is equal to 1, otherwise the number subtracted by 1, fibonaccified, added with: the number subtracted by 2, fibonaccified.
-output is 4 fibonaccified.
+number halved is the number divided by 2.
+number is whole if the number is equal to the number rounded.
+number is even if the number halved is whole.
+number is odd if the number is not even.
+
+output is "odd" if 1 is odd, otherwise "even" if 2 is even, otherwise "what".
