@@ -17,7 +17,11 @@ macro_rules! val_variant {
 
     (string $(get $out:ident)? $(make $in:expr)?) => {
         Value::Str($($out)? $($in)?)
-    }; // ...
+    };
+
+    (list $(get $out:ident)? $(make $in:expr)?) => {
+        Value::List($($out)? $($in)?)
+    };
 }
 
 macro_rules! builtin_funcs {
@@ -57,7 +61,7 @@ macro_rules! builtin_patterns {
                         let mut i = 0;
                         $(
                             #[allow(non_snake_case)]
-                            let $argname = check_value!(args[i], $argtype);
+                            let $argname = check_value!(args[i].clone(), $argtype);
                             i += 1;
                         )*
                         $output
@@ -83,4 +87,5 @@ builtin_patterns! {
     is equal to (number A, number B) => (A - B).abs() < f64::EPSILON,
     is greater than (number A, number B) => A > B,
     is less than (number A, number B) => A < B,
+    is empty (list A) => A.is_empty(),
 }

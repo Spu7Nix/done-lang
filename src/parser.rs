@@ -40,6 +40,12 @@ enum LogosToken {
     #[token("not")]
     Not,
 
+    #[token("of")]
+    Of,
+
+    #[token("list")]
+    List,
+
     #[regex(r"[0-9]+(\.[0-9]+)?", priority = 1)]
     Number,
 
@@ -68,6 +74,8 @@ pub enum Token {
     And,
     Or,
     Not,
+    Of,
+    List,
     Otherwise,
     Number(f64),
     StringLiteral(Symbol),
@@ -100,9 +108,7 @@ impl Tokens {
     }
 
     pub fn previous(&mut self) {
-       
-            self.index -= 1;
-            
+        self.index -= 1;
     }
 }
 
@@ -132,6 +138,8 @@ pub fn lex(text: &str) -> Vec<Token> {
             LogosToken::And => Token::And,
             LogosToken::Or => Token::Or,
             LogosToken::Not => Token::Not,
+            LogosToken::Of => Token::Of,
+            LogosToken::List => Token::List,
         })
     }
     tokens
@@ -178,8 +186,13 @@ impl WordTree {
                 WordTree::Branches(b) => b,
             };
         }
-        
-        match current_branch.entry(*symbols.last().unwrap()).or_insert(WordTree::Leaf(NamedFunc { pattern: None, perfectum: None })) {
+
+        match current_branch
+            .entry(*symbols.last().unwrap())
+            .or_insert(WordTree::Leaf(NamedFunc {
+                pattern: None,
+                perfectum: None,
+            })) {
             WordTree::Leaf(l) => l,
             WordTree::Branches(_) => panic!("name too short"),
         }
@@ -227,7 +240,7 @@ impl ParseState {
             type_map: HashMap::new(),
             func_map: Vec::new(),
             scope_args: Vec::new(),
-            
+
             pat_map: Vec::new(),
         };
         for (name, types, f) in BUILTIN_FUNCS {
@@ -257,7 +270,6 @@ impl ParseState {
             };
             let index = out.insert_pat(signature);
             out.pat_map[index.0].1 = PatContent::Builtin(*f);
-            
         }
         out
     }
@@ -274,16 +286,16 @@ impl ParseState {
     }
 
     fn insert_func(&mut self, signature: FuncSignature) -> FnPtr {
-        (*self.names
-            .access(signature.name)).perfectum = Some(FnPtr(self.func_map.len()));
-        self.func_map.push((signature.info, FuncContent::Uninitialized));
+        (*self.names.access(signature.name)).perfectum = Some(FnPtr(self.func_map.len()));
+        self.func_map
+            .push((signature.info, FuncContent::Uninitialized));
         FnPtr(self.func_map.len() - 1)
     }
 
     fn insert_pat(&mut self, signature: FuncSignature) -> PatPtr {
-        (*self.names
-            .access(signature.name)).pattern = Some(PatPtr(self.pat_map.len()));
-        self.pat_map.push((signature.info, PatContent::Uninitialized));
+        (*self.names.access(signature.name)).pattern = Some(PatPtr(self.pat_map.len()));
+        self.pat_map
+            .push((signature.info, PatContent::Uninitialized));
         PatPtr(self.pat_map.len() - 1)
     }
 }
@@ -302,11 +314,16 @@ pub enum Expr {
         otherwise: Box<Expr>,
     },
     ArgRef(usize),
+    List(Vec<Expr>),
 }
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum PatternExpr {
-    Match { pat: PatPtr, args: Vec<Expr>, not: bool },
+    Match {
+        pat: PatPtr,
+        args: Vec<Expr>,
+        not: bool,
+    },
     And(Box<PatternExpr>, Box<PatternExpr>),
     Or(Box<PatternExpr>, Box<PatternExpr>),
 }
@@ -365,7 +382,7 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
             let index = state.insert_pat(signature.clone());
             state.set_scope_args(&signature);
             let condition = parse_pattern_expr(tokens, state);
-            
+
             state.pat_map[index.0].1 = PatContent::Custom(condition);
         }
         _ => {
@@ -383,7 +400,7 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
             let signature = parse_func_def(&def_part, state);
             let index = state.insert_func(signature.clone());
             state.set_scope_args(&signature);
-            let f = parse_value(tokens, state, ExprParseAmount::Exhaustive);
+            let f = parse_value(tokens, state, ExprParseAmount::Exhaustive, true);
             state.func_map[index.0].1 = FuncContent::Custom(f);
         }
     };
@@ -444,9 +461,15 @@ enum ExprParseAmount {
     Exhaustive,
 }
 
-fn parse_value(tokens: &mut Tokens, state: &mut ParseState, amount: ExprParseAmount) -> Expr {
+fn parse_value(
+    tokens: &mut Tokens,
+    state: &mut ParseState,
+    amount: ExprParseAmount,
+    allow_colon: bool,
+) -> Expr {
+    #![warn(unused_parens)]
     let exhaustive = amount == ExprParseAmount::Exhaustive
-        || if tokens.next() == Some(Token::Colon) {
+        || if tokens.next() == Some(Token::Colon) && allow_colon {
             true
         } else {
             tokens.previous();
@@ -472,9 +495,34 @@ fn parse_value(tokens: &mut Tokens, state: &mut ParseState, amount: ExprParseAmo
         Some(Token::StringLiteral(s)) => (Expr::Str(s)),
         Some(Token::Symbol(_)) => {
             tokens.previous();
-            return parse_expression(None, tokens, state)
-        },
+            return parse_expression(None, tokens, state);
+        }
         Some(Token::TypeName(_)) => todo!(),
+        Some(Token::List) => {
+            expect!(Token::Of, tokens);
+            let mut list = Vec::new();
+            loop {
+                list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
+                match tokens.next() {
+                    Some(Token::Comma) => match tokens.next() {
+                        Some(Token::And) => {
+                            list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
+                            break;
+                        }
+                        _ => tokens.previous(),
+                    },
+                    Some(Token::And) => {
+                        list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
+                        break;
+                    }
+                    _ => panic!("expected comma or `and`"),
+                }
+            }
+
+            // expect!((Token::Comma | Token::Period), tokens);
+            // tokens.previous();
+            Expr::List(list)
+        }
         a => panic!("unexpected {:?}", a),
     };
     if exhaustive {
@@ -495,10 +543,12 @@ fn parse_expression(
                 tokens.previous();
                 let mut args = current_expr.into_iter().collect::<Vec<_>>();
 
-                let ptr = parse_multi_symbol_name(state, tokens).perfectum.expect("no function with this name");
+                let ptr = parse_multi_symbol_name(state, tokens)
+                    .perfectum
+                    .expect("no function with this name");
 
                 if state.func_map[ptr.0].0.args.len() == 2 {
-                    args.push(parse_value(tokens, state, ExprParseAmount::Value)); 
+                    args.push(parse_value(tokens, state, ExprParseAmount::Value, true));
                 }
                 Expr::Call { func: ptr, args }
             }
@@ -518,17 +568,21 @@ fn parse_expression(
                         tokens.previous();
                         match tokens.next() {
                             Some(Token::Comma) => (),
-                            _ => panic!("expected comma")
+                            _ => panic!("expected comma"),
                         }
                     }
                 };
                 expect!(Token::Otherwise, tokens);
-                let otherwise = parse_value(tokens, state, ExprParseAmount::Exhaustive);
-                Expr::If { condition, then: current_expr.unwrap().into(), otherwise: otherwise.into() }
+                let otherwise = parse_value(tokens, state, ExprParseAmount::Exhaustive, true);
+                Expr::If {
+                    condition,
+                    then: current_expr.unwrap().into(),
+                    otherwise: otherwise.into(),
+                }
             }
             Some(a) => {
                 tokens.previous();
-                return current_expr.expect(&format!("unexpected {:?}", a));
+                return current_expr.unwrap_or_else(|| panic!("unexpected {:?}", a));
             }
             None => panic!("unexpected end of input"),
         });
@@ -539,14 +593,13 @@ fn parse_multi_symbol_name(state: &mut ParseState, tokens: &mut Tokens) -> Named
     let mut signature = Vec::new();
     let start_symbol = if let Some(Token::Symbol(s)) = tokens.next() {
         s
-    } else { panic!("expected symbol")};
+    } else {
+        panic!("expected symbol")
+    };
     if let Some(mut b) = state.names.branches().get(&start_symbol) {
         loop {
             match b {
-                &WordTree::Leaf(ptr) => {
-                    
-                    break ptr
-                }
+                &WordTree::Leaf(ptr) => break ptr,
                 WordTree::Branches(new_map) => match tokens.next() {
                     Some(Token::Symbol(s)) => {
                         signature.push(s);
@@ -565,7 +618,7 @@ fn parse_multi_symbol_name(state: &mut ParseState, tokens: &mut Tokens) -> Named
 }
 
 fn parse_pattern_expr(tokens: &mut Tokens, state: &mut ParseState) -> PatternExpr {
-    let value = parse_value(tokens, state, ExprParseAmount::Exhaustive);
+    let value = parse_value(tokens, state, ExprParseAmount::Exhaustive, true);
     expect!(Token::Is, tokens);
     let not = if let Some(Token::Not) = tokens.next() {
         true
@@ -575,10 +628,21 @@ fn parse_pattern_expr(tokens: &mut Tokens, state: &mut ParseState) -> PatternExp
     };
     let mut args = vec![value];
 
-    let ptr = parse_multi_symbol_name(state, tokens).pattern.expect("no pattern with this name");
+    let ptr = parse_multi_symbol_name(state, tokens)
+        .pattern
+        .expect("no pattern with this name");
 
     if state.pat_map[ptr.0].0.args.len() == 2 {
-        args.push(parse_value(tokens, state, ExprParseAmount::Exhaustive)); 
+        args.push(parse_value(
+            tokens,
+            state,
+            ExprParseAmount::Exhaustive,
+            true,
+        ));
     }
-    PatternExpr::Match { pat: ptr, args, not }
+    PatternExpr::Match {
+        pat: ptr,
+        args,
+        not,
+    }
 }

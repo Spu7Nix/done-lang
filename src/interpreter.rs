@@ -30,12 +30,11 @@ impl<'a> State<'a> {
 pub fn interpret(parsed: ParseState) -> Value {
     let mut state = State::new(&parsed);
     //dbg!(&parsed.func_names);
-    match parsed
-        .names
-        .branches()
-        .get(&LocalIntern::from("output"))
-    {
-        Some(WordTree::Leaf(NamedFunc {perfectum: Some(id), ..})) => evaluate_expr(
+    match parsed.names.branches().get(&LocalIntern::from("output")) {
+        Some(WordTree::Leaf(NamedFunc {
+            perfectum: Some(id),
+            ..
+        })) => evaluate_expr(
             match state.func_map[id.0].1.clone() {
                 FuncContent::Custom(e) => e,
                 FuncContent::Builtin(_) => unreachable!(),
@@ -64,7 +63,7 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
             match &state.func_map[func.0] {
                 (_, FuncContent::Builtin(b)) => b(evaled),
                 (_, FuncContent::Custom(e)) => evaluate_expr(e.clone(), state, &evaled),
-                (_, FuncContent::Uninitialized) => unreachable!()
+                (_, FuncContent::Uninitialized) => unreachable!(),
             }
         }
         Expr::ArgRef(i) => args[i].clone(),
@@ -79,13 +78,24 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
             } else {
                 evaluate_expr(*otherwise, state, args)
             }
-        },
+        }
+        Expr::List(l) => {
+            let evaled = l
+                .into_iter()
+                .map(|a| evaluate_expr(a, state, args))
+                .collect::<Vec<_>>();
+            Value::List(evaled)
+        }
     }
 }
 
 fn evaluate_pattern_expr(expr: PatternExpr, state: &mut State, args: &[Value]) -> bool {
     match expr {
-        PatternExpr::Match { pat, args: call_args, not } => {
+        PatternExpr::Match {
+            pat,
+            args: call_args,
+            not,
+        } => {
             let evaled = call_args
                 .into_iter()
                 .map(|a| evaluate_expr(a, state, args))
@@ -100,7 +110,7 @@ fn evaluate_pattern_expr(expr: PatternExpr, state: &mut State, args: &[Value]) -
             } else {
                 result
             }
-        },
+        }
         PatternExpr::And(_, _) => todo!(),
         PatternExpr::Or(_, _) => todo!(),
     }
