@@ -1,2 +1,2 @@
 
-output is list of "hello" and "world".
+output is list of "hello" and "world" with each item uppercased, joined with " ".

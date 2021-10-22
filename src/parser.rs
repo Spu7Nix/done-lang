@@ -7,8 +7,8 @@ use crate::interpreter::Value;
 use internment::LocalIntern;
 pub type Symbol = LocalIntern<String>;
 
-#[derive(Logos, Debug, PartialEq, Eq)]
-enum LogosToken {
+#[derive(Logos, Debug, PartialEq, Clone)]
+pub enum Token {
     //keywords
     #[token("the")]
     The,
@@ -18,6 +18,15 @@ enum LogosToken {
 
     #[token("otherwise")]
     Otherwise,
+
+    #[token("with")]
+    With,
+
+    #[token("each")]
+    Each,
+
+    #[token("item")]
+    Item,
 
     #[token("is")]
     Is,
@@ -46,42 +55,45 @@ enum LogosToken {
     #[token("list")]
     List,
 
-    #[regex(r"[0-9]+(\.[0-9]+)?", priority = 1)]
-    Number,
+    #[regex(r"[0-9]+(\.[0-9]+)?", | lex | lex.slice().parse::<f64>().unwrap())]
+    Number(f64),
 
-    #[regex(r#"[a-z]?"(?:\\.|[^\\"])*"|'(?:\\.|[^\\'])*'"#)]
-    StringLiteral,
+    #[regex(r#"[a-z]?"(?:\\.|[^\\"])*"|'(?:\\.|[^\\'])*'"#, | lex | {
+        let slice = lex.slice();
+        Symbol::from(&slice[1..(slice.len() - 1)])
+    })]
+    StringLiteral(Symbol),
 
-    #[regex(r#"([A-Z]\w*)|number|string|list"#, priority = 1)]
-    TypeName,
+    #[regex(r#"number|string"#, | lex | Symbol::from(lex.slice()))]
+    TypeName(Symbol),
 
-    #[regex(r#"[^A-Z\W]\w*"#, priority = 0)]
-    Symbol,
+    #[regex(r"([a-zA-Z_][a-zA-Z0-9_]*)|\$", | lex | Symbol::from(lex.slice()))]
+    Symbol(Symbol),
 
     #[error]
     #[regex(r"[ \t\f\n\r]+|/\*[^*]*\*(([^/\*][^\*]*)?\*)*/|//[^\n]*", logos::skip)]
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Token {
-    The(Symbol),
-    If,
-    Is,
-    Period,
-    Colon,
-    Comma,
-    And,
-    Or,
-    Not,
-    Of,
-    List,
-    Otherwise,
-    Number(f64),
-    StringLiteral(Symbol),
-    Symbol(Symbol),
-    TypeName(Symbol),
-}
+// #[derive(Debug, Clone, PartialEq)]
+// pub enum Token {
+//     The(Symbol),
+//     If,
+//     Is,
+//     Period,
+//     Colon,
+//     Comma,
+//     And,
+//     Or,
+//     Not,
+//     Of,
+//     List,
+//     Otherwise,
+//     Number(f64),
+//     StringLiteral(Symbol),
+//     Symbol(Symbol),
+//     TypeName(Symbol),
+// }
 
 #[derive(Debug)]
 pub struct Tokens {
@@ -113,36 +125,7 @@ impl Tokens {
 }
 
 pub fn lex(text: &str) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let mut iter = LogosToken::lexer(text);
-    while let Some(token) = iter.next() {
-        tokens.push(match token {
-            LogosToken::The => Token::The({
-                assert_eq!(iter.next().unwrap(), LogosToken::TypeName);
-                Symbol::from(iter.slice())
-            }),
-            LogosToken::If => Token::If,
-            LogosToken::Otherwise => Token::Otherwise,
-            LogosToken::Is => Token::Is,
-            LogosToken::Period => Token::Period,
-            LogosToken::Colon => Token::Colon,
-            LogosToken::Comma => Token::Comma,
-            LogosToken::Number => Token::Number(iter.slice().parse().unwrap()),
-            LogosToken::StringLiteral => Token::StringLiteral({
-                let slice = iter.slice();
-                Symbol::from(&slice[1..(slice.len() - 1)])
-            }),
-            LogosToken::Symbol => Token::Symbol(Symbol::from(iter.slice())),
-            LogosToken::Error => todo!(),
-            LogosToken::TypeName => Token::TypeName(Symbol::from(iter.slice())),
-            LogosToken::And => Token::And,
-            LogosToken::Or => Token::Or,
-            LogosToken::Not => Token::Not,
-            LogosToken::Of => Token::Of,
-            LogosToken::List => Token::List,
-        })
-    }
-    tokens
+    Token::lexer(text).collect::<Vec<_>>()
 }
 
 #[derive(PartialEq, Clone, Debug, Copy)]
@@ -315,6 +298,11 @@ pub enum Expr {
     },
     ArgRef(usize),
     List(Vec<Expr>),
+    ListMap {
+        list: Box<Expr>,
+        func: FnPtr,
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -476,7 +464,12 @@ fn parse_value(
             false
         };
     let current_expr = match tokens.next() {
-        Some(Token::The(a)) => {
+        Some(Token::The) => {
+            let a = if let Some(Token::TypeName(a)) = tokens.next() {
+                a
+            } else {
+                panic!("expected typename")
+            };
             let typ = state.get_type(a);
             let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
                 if *a == typ {
@@ -580,6 +573,26 @@ fn parse_expression(
                     otherwise: otherwise.into(),
                 }
             }
+            Some(Token::With) => {
+                expect!(Token::Each, tokens);
+                expect!(Token::Item, tokens);
+
+                let ptr = parse_multi_symbol_name(state, tokens)
+                    .perfectum
+                    .expect("no function with this name");
+
+                let args = if state.func_map[ptr.0].0.args.len() == 2 {
+                    vec![parse_value(tokens, state, ExprParseAmount::Value, true)]
+                } else {
+                    Vec::new()
+                };
+
+                Expr::ListMap {
+                    list: current_expr.expect("expected list").into(),
+                    func: ptr,
+                    args,
+                }
+            }
             Some(a) => {
                 tokens.previous();
                 return current_expr.unwrap_or_else(|| panic!("unexpected {:?}", a));
@@ -600,16 +613,18 @@ fn parse_multi_symbol_name(state: &mut ParseState, tokens: &mut Tokens) -> Named
         loop {
             match b {
                 &WordTree::Leaf(ptr) => break ptr,
-                WordTree::Branches(new_map) => match tokens.next() {
-                    Some(Token::Symbol(s)) => {
-                        signature.push(s);
-                        match new_map.get(&s) {
-                            Some(b2) => b = b2,
-                            None => panic!("undefined function: {:?}", signature),
-                        }
+                WordTree::Branches(new_map) => {
+                    let s = match tokens.next() {
+                        Some(Token::Symbol(s)) => s,
+                        Some(Token::With) => Symbol::from("with"),
+                        a => panic!("expected symbol, found: {:?}", a),
+                    };
+                    signature.push(s);
+                    match new_map.get(&s) {
+                        Some(b2) => b = b2,
+                        None => panic!("undefined function: {:?}", signature),
                     }
-                    a => panic!("expected symbol, found: {:?}", a),
-                },
+                }
             }
         }
     } else {

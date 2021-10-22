@@ -37,7 +37,7 @@ macro_rules! builtin_funcs {
                         let mut i = 0;
                         $(
                             #[allow(non_snake_case)]
-                            let $argname = check_value!(args[i], $argtype);
+                            let $argname = check_value!(&args[i], $argtype);
                             i += 1;
                         )*
                         val_variant!($ret_type make $output)
@@ -61,7 +61,7 @@ macro_rules! builtin_patterns {
                         let mut i = 0;
                         $(
                             #[allow(non_snake_case)]
-                            let $argname = check_value!(args[i].clone(), $argtype);
+                            let $argname = check_value!(&args[i], $argtype);
                             i += 1;
                         )*
                         $output
@@ -81,6 +81,14 @@ builtin_funcs! {
     fn floored (number A) -> number => A.floor(),
     fn ceiled (number A) -> number => A.ceil(),
     fn rounded (number A) -> number => A.round(),
+
+    fn uppercased (string A) -> string => A.to_uppercase(),
+    fn lowercased (string A) -> string => A.to_lowercase(),
+
+    fn joined with (list A, string B) -> string => {
+        let strings = A.iter().map(|el| if let Value::Str(s) = el { s.clone() } else { panic!("expected string") }).collect::<Vec<_>>();
+        strings.join(B)
+    },
 }
 
 builtin_patterns! {

@@ -59,12 +59,7 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
                 .into_iter()
                 .map(|a| evaluate_expr(a, state, args))
                 .collect::<Vec<_>>();
-
-            match &state.func_map[func.0] {
-                (_, FuncContent::Builtin(b)) => b(evaled),
-                (_, FuncContent::Custom(e)) => evaluate_expr(e.clone(), state, &evaled),
-                (_, FuncContent::Uninitialized) => unreachable!(),
-            }
+            run_func(state, func, evaled)
         }
         Expr::ArgRef(i) => args[i].clone(),
         Expr::If {
@@ -86,6 +81,38 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
                 .collect::<Vec<_>>();
             Value::List(evaled)
         }
+        Expr::ListMap {
+            list,
+            func,
+            args: call_args,
+        } => {
+            let list = if let Value::List(l) = evaluate_expr(*list, state, args) {
+                l
+            } else {
+                panic!("expected list")
+            };
+            let evaled = call_args
+                .into_iter()
+                .map(|a| evaluate_expr(a, state, args))
+                .collect::<Vec<_>>();
+            Value::List(
+                list.into_iter()
+                    .map(|item| {
+                        let mut new_args = vec![item];
+                        new_args.extend(evaled.clone());
+                        run_func(state, func, new_args)
+                    })
+                    .collect(),
+            )
+        }
+    }
+}
+
+fn run_func(state: &mut State, func: crate::parser::FnPtr, args: Vec<Value>) -> Value {
+    match &state.func_map[func.0] {
+        (_, FuncContent::Builtin(b)) => b(args),
+        (_, FuncContent::Custom(e)) => evaluate_expr(e.clone(), state, &args),
+        (_, FuncContent::Uninitialized) => unreachable!(),
     }
 }
 
