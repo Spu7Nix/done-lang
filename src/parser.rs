@@ -28,6 +28,12 @@ pub enum Token {
     #[token("item")]
     Item,
 
+    #[token("in")]
+    In,
+
+    #[token("that")]
+    That,
+
     #[token("is")]
     Is,
 
@@ -284,13 +290,16 @@ impl ParseState {
 }
 
 #[derive(PartialEq, Clone, Debug)]
+pub struct Call {
+    pub func: FnPtr,
+    pub args: Vec<Expr>,
+}
+
+#[derive(PartialEq, Clone, Debug)]
 pub enum Expr {
     Number(f64),
     Str(Symbol),
-    Call {
-        func: FnPtr,
-        args: Vec<Expr>,
-    },
+    Call(Call),
     If {
         condition: PatternExpr,
         then: Box<Expr>,
@@ -300,18 +309,24 @@ pub enum Expr {
     List(Vec<Expr>),
     ListMap {
         list: Box<Expr>,
-        func: FnPtr,
-        args: Vec<Expr>,
+        func: Call,
+    },
+    ListFilter {
+        list: Box<Expr>,
+        predicate: Match,
     },
 }
 
 #[derive(PartialEq, Clone, Debug)]
+pub struct Match {
+    pub pat: PatPtr,
+    pub args: Vec<Expr>,
+    pub not: bool,
+}
+
+#[derive(PartialEq, Clone, Debug)]
 pub enum PatternExpr {
-    Match {
-        pat: PatPtr,
-        args: Vec<Expr>,
-        not: bool,
-    },
+    Match(Match),
     And(Box<PatternExpr>, Box<PatternExpr>),
     Or(Box<PatternExpr>, Box<PatternExpr>),
 }
@@ -493,28 +508,58 @@ fn parse_value(
         Some(Token::TypeName(_)) => todo!(),
         Some(Token::List) => {
             expect!(Token::Of, tokens);
-            let mut list = Vec::new();
-            loop {
-                list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
-                match tokens.next() {
-                    Some(Token::Comma) => match tokens.next() {
-                        Some(Token::And) => {
-                            list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
-                            break;
-                        }
-                        _ => tokens.previous(),
-                    },
-                    Some(Token::And) => {
-                        list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
-                        break;
+            match tokens.next() {
+                Some(Token::Each) => {
+                    // filter
+                    expect!(Token::Item, tokens);
+                    expect!(Token::That, tokens);
+                    expect!(Token::Is, tokens);
+                    let predicate = parse_match(None, tokens, state);
+                    expect!(Token::In, tokens);
+                    let list = parse_value(tokens, state, ExprParseAmount::Value, false);
+
+                    Expr::ListFilter {
+                        list: list.into(),
+                        predicate,
                     }
-                    _ => panic!("expected comma or `and`"),
+                }
+                _ => {
+                    tokens.previous();
+                    // list literal
+                    let mut list = Vec::new();
+                    loop {
+                        list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
+                        match tokens.next() {
+                            Some(Token::Comma) => match tokens.next() {
+                                Some(Token::And) => {
+                                    list.push(parse_value(
+                                        tokens,
+                                        state,
+                                        ExprParseAmount::Value,
+                                        false,
+                                    ));
+                                    break;
+                                }
+                                _ => tokens.previous(),
+                            },
+                            Some(Token::And) => {
+                                list.push(parse_value(
+                                    tokens,
+                                    state,
+                                    ExprParseAmount::Value,
+                                    false,
+                                ));
+                                break;
+                            }
+                            _ => panic!("expected comma or `and`"),
+                        }
+                    }
+
+                    // expect!((Token::Comma | Token::Period), tokens);
+                    // tokens.previous();
+                    Expr::List(list)
                 }
             }
-
-            // expect!((Token::Comma | Token::Period), tokens);
-            // tokens.previous();
-            Expr::List(list)
         }
         a => panic!("unexpected {:?}", a),
     };
@@ -543,7 +588,7 @@ fn parse_expression(
                 if state.func_map[ptr.0].0.args.len() == 2 {
                     args.push(parse_value(tokens, state, ExprParseAmount::Value, true));
                 }
-                Expr::Call { func: ptr, args }
+                Expr::Call(Call { func: ptr, args })
             }
             Some(Token::Comma) => {
                 if let Some(e) = current_expr {
@@ -589,8 +634,7 @@ fn parse_expression(
 
                 Expr::ListMap {
                     list: current_expr.expect("expected list").into(),
-                    func: ptr,
-                    args,
+                    func: Call { func: ptr, args },
                 }
             }
             Some(a) => {
@@ -635,18 +679,20 @@ fn parse_multi_symbol_name(state: &mut ParseState, tokens: &mut Tokens) -> Named
 fn parse_pattern_expr(tokens: &mut Tokens, state: &mut ParseState) -> PatternExpr {
     let value = parse_value(tokens, state, ExprParseAmount::Exhaustive, true);
     expect!(Token::Is, tokens);
+    PatternExpr::Match(parse_match(Some(value), tokens, state))
+}
+
+fn parse_match(value: Option<Expr>, tokens: &mut Tokens, state: &mut ParseState) -> Match {
     let not = if let Some(Token::Not) = tokens.next() {
         true
     } else {
         tokens.previous();
         false
     };
-    let mut args = vec![value];
-
+    let mut args = value.into_iter().collect::<Vec<_>>();
     let ptr = parse_multi_symbol_name(state, tokens)
         .pattern
         .expect("no pattern with this name");
-
     if state.pat_map[ptr.0].0.args.len() == 2 {
         args.push(parse_value(
             tokens,
@@ -655,7 +701,7 @@ fn parse_pattern_expr(tokens: &mut Tokens, state: &mut ParseState) -> PatternExp
             true,
         ));
     }
-    PatternExpr::Match {
+    Match {
         pat: ptr,
         args,
         not,

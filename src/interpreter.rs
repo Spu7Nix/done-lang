@@ -1,6 +1,6 @@
 use internment::LocalIntern;
 
-use crate::parser::{Expr, FuncInfo, NamedFunc, PatContent, PatternExpr};
+use crate::parser::{Call, Expr, FuncInfo, Match, NamedFunc, PatContent, PatternExpr};
 use crate::parser::{FuncContent, WordTree};
 
 use crate::parser::ParseState;
@@ -51,10 +51,10 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
     match expr {
         Expr::Number(n) => Value::Number(n),
         Expr::Str(s) => Value::Str(s.to_string()),
-        Expr::Call {
+        Expr::Call(Call {
             func,
             args: call_args,
-        } => {
+        }) => {
             let evaled = call_args
                 .into_iter()
                 .map(|a| evaluate_expr(a, state, args))
@@ -83,8 +83,10 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
         }
         Expr::ListMap {
             list,
-            func,
-            args: call_args,
+            func: Call {
+                func,
+                args: call_args,
+            },
         } => {
             let list = if let Value::List(l) = evaluate_expr(*list, state, args) {
                 l
@@ -105,6 +107,36 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
                     .collect(),
             )
         }
+        Expr::ListFilter {
+            list,
+            predicate:
+                Match {
+                    pat,
+                    args: call_args,
+                    not,
+                },
+        } => {
+            let list = if let Value::List(l) = evaluate_expr(*list, state, args) {
+                l
+            } else {
+                panic!("expected list")
+            };
+
+            let evaled = call_args
+                .into_iter()
+                .map(|a| evaluate_expr(a, state, args))
+                .collect::<Vec<_>>();
+
+            Value::List(
+                list.into_iter()
+                    .filter(|item| {
+                        let mut new_args = vec![item.clone()];
+                        new_args.extend(evaled.clone());
+                        eval_match(pat, new_args, not, state)
+                    })
+                    .collect(),
+            )
+        }
     }
 }
 
@@ -118,27 +150,36 @@ fn run_func(state: &mut State, func: crate::parser::FnPtr, args: Vec<Value>) -> 
 
 fn evaluate_pattern_expr(expr: PatternExpr, state: &mut State, args: &[Value]) -> bool {
     match expr {
-        PatternExpr::Match {
+        PatternExpr::Match(Match {
             pat,
             args: call_args,
             not,
-        } => {
+        }) => {
             let evaled = call_args
                 .into_iter()
                 .map(|a| evaluate_expr(a, state, args))
                 .collect::<Vec<_>>();
-            let result = match &state.pat_map[pat.0].1 {
-                PatContent::Custom(p) => evaluate_pattern_expr(p.clone(), state, &evaled),
-                PatContent::Builtin(b) => b(evaled),
-                PatContent::Uninitialized => unreachable!(),
-            };
-            if not {
-                !result
-            } else {
-                result
-            }
+            eval_match(pat, evaled, not, state)
         }
         PatternExpr::And(_, _) => todo!(),
         PatternExpr::Or(_, _) => todo!(),
+    }
+}
+
+fn eval_match(
+    pat: crate::parser::PatPtr,
+    evaled: Vec<Value>,
+    not: bool,
+    state: &mut State,
+) -> bool {
+    let result = match &state.pat_map[pat.0].1 {
+        PatContent::Custom(p) => evaluate_pattern_expr(p.clone(), state, &evaled),
+        PatContent::Builtin(b) => b(evaled),
+        PatContent::Uninitialized => unreachable!(),
+    };
+    if not {
+        !result
+    } else {
+        result
     }
 }
