@@ -2,7 +2,9 @@ use std::fmt::Display;
 
 use internment::LocalIntern;
 
-use crate::parser::{Call, Expr, FuncInfo, Match, NamedFunc, PatContent, PatternExpr, PropContent};
+use crate::parser::{
+    Call, Expr, FuncInfo, Match, NamedFunc, PatContent, PatternExpr, PropContent, Ty,
+};
 use crate::parser::{FuncContent, WordTree};
 
 use crate::parser::ParseState;
@@ -26,7 +28,7 @@ impl Display for Value {
                 }
                 out += &format!("and {}", l.last().unwrap());
                 write!(f, "{}", out)
-            },
+            }
         }
     }
 }
@@ -35,6 +37,7 @@ impl Display for Value {
 pub struct State<'a> {
     pub func_map: &'a [(FuncInfo, FuncContent)],
     pub pat_map: &'a [(FuncInfo, PatContent)],
+    pub prop_map: &'a [(Ty, PropContent)],
 }
 
 impl<'a> State<'a> {
@@ -42,6 +45,7 @@ impl<'a> State<'a> {
         Self {
             func_map: &parsed.func_map,
             pat_map: &parsed.pat_map,
+            prop_map: &parsed.prop_map,
         }
     }
 }
@@ -126,32 +130,20 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
                     .collect(),
             )
         }
-        Expr::ListFilter {
-            list,
-            predicate:
-                Match {
-                    pat,
-                    args: call_args,
-                    not,
-                },
-        } => {
+        Expr::ListFilter { list, predicate } => {
             let list = if let Value::List(l) = evaluate_expr(*list, state, args) {
                 l
             } else {
                 panic!("expected list")
             };
 
-            let evaled = call_args
-                .into_iter()
-                .map(|a| evaluate_expr(a, state, args))
-                .collect::<Vec<_>>();
-
             Value::List(
                 list.into_iter()
                     .filter(|item| {
-                        let mut new_args = vec![item.clone()];
-                        new_args.extend(evaled.clone());
-                        eval_match(pat, new_args, not, state)
+                        let mut new_args = args.to_vec();
+                        new_args.push(item.clone());
+
+                        evaluate_pattern_expr(predicate.clone(), state, &new_args)
                     })
                     .collect(),
             )
@@ -163,7 +155,7 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
                 (_, PropContent::Custom(e)) => evaluate_expr(e.clone(), state, &args),
                 (_, PropContent::Uninitialized) => unreachable!(),
             }
-        },
+        }
     }
 }
 

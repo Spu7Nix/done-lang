@@ -22,6 +22,10 @@ macro_rules! val_variant {
     (list $(get $out:ident)? $(make $in:expr)?) => {
         Value::List($($out)? $($in)?)
     };
+
+    (make $in:expr) => {
+        $in
+    };
 }
 
 macro_rules! builtin_funcs {
@@ -74,7 +78,7 @@ macro_rules! builtin_patterns {
 
 macro_rules! builtin_props {
     {
-        $($($name:ident)+ : of $argtype:ident $argname:ident -> $ret_type:ident => $output:expr,)*
+        $($($name:ident)+ : of $argtype:ident $argname:ident $( -> $ret_type:ident)? => $output:expr,)*
     } => {
         pub const BUILTIN_PROPS: &[(&[&str], &str, fn(Value) -> Value)] = &[
             $(
@@ -82,13 +86,13 @@ macro_rules! builtin_props {
                     &[$(stringify!($name)),+],
                     stringify!($argtype),
                     | args | {
-                        
-                        
+
+
                         #[allow(non_snake_case)]
                         let $argname = check_value!(&args, $argtype);
-                            
-                        
-                        val_variant!($ret_type make $output)
+
+
+                        val_variant!($($ret_type)? make $output)
                     }
                 ),
             )*
@@ -122,6 +126,7 @@ builtin_patterns! {
     is empty (list A) => A.is_empty(),
 }
 
-builtin_props!{
+builtin_props! {
     length : of list A -> number => A.len() as f64,
+    first item : of list A => A.first().expect("no first element in empty list").clone(),
 }

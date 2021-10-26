@@ -1,2 +1,4 @@
 
-output is list of each item that is greater than 3 in list of 1, 2, 3, 4, 5, 6, 7, 8, and 9.
+number is whole if the number is equal to the number rounded.
+number is even if the number divided by 2 is whole.
+output is the first item of list of each item in list of 1, 2, 3, 4, 5, 6, 7, 9, and 10 where the item is even.

@@ -37,6 +37,9 @@ pub enum Token {
     #[token("is")]
     Is,
 
+    #[token("where")]
+    Where,
+
     #[token(".")]
     Period,
 
@@ -209,10 +212,16 @@ pub struct ParseState {
     pub func_map: Vec<(FuncInfo, FuncContent)>,
     pub prop_map: Vec<(Ty, PropContent)>,
     pub pat_map: Vec<(FuncInfo, PatContent)>,
-    pub scope_args: Vec<Ty>,
+    pub scope_args: Vec<ScopeArg>,
 }
 
-use crate::builtin::{BUILTIN_FUNCS, BUILTIN_PATTERNS,BUILTIN_PROPS};
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScopeArg {
+    Typed(Ty),
+    Item,
+}
+
+use crate::builtin::{BUILTIN_FUNCS, BUILTIN_PATTERNS, BUILTIN_PROPS};
 
 #[derive(Debug, Clone)]
 pub enum FuncContent {
@@ -293,7 +302,13 @@ impl ParseState {
     }
 
     pub fn set_scope_args(&mut self, func: &FuncSignature) {
-        self.scope_args = func.info.args.clone();
+        self.scope_args = func
+            .info
+            .args
+            .iter()
+            .copied()
+            .map(ScopeArg::Typed)
+            .collect();
     }
 
     fn insert_func(&mut self, signature: FuncSignature) -> FnPtr {
@@ -312,9 +327,8 @@ impl ParseState {
 
     fn insert_prop(&mut self, typ: Ty, name: Vec<Symbol>) -> PropPtr {
         (*self.names.access(name)).property = Some(PropPtr(self.prop_map.len()));
-        self.prop_map
-            .push((typ, PropContent::Uninitialized));
-        PropPtr(self.pat_map.len() - 1)
+        self.prop_map.push((typ, PropContent::Uninitialized));
+        PropPtr(self.prop_map.len() - 1)
     }
 }
 
@@ -342,12 +356,12 @@ pub enum Expr {
     },
     ListFilter {
         list: Box<Expr>,
-        predicate: Match,
+        predicate: PatternExpr,
     },
     Prop {
         arg: Box<Expr>,
         func: PropPtr,
-    }
+    },
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -414,6 +428,7 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
                     None => panic!("expected type name, symbol or \"is\""),
                 }
             }
+
             let signature = parse_pat_def(&def_part, state, first_type);
             let index = state.insert_pat(signature.clone());
             state.set_scope_args(&signature);
@@ -512,26 +527,50 @@ fn parse_value(
             false
         };
     let current_expr = match tokens.next() {
-        Some(Token::The) => {
-            let a = if let Some(Token::TypeName(a)) = tokens.next() {
-                a
-            } else {
-                panic!("expected typename")
-            };
-            let typ = state.get_type(a);
-            let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
-                if *a == typ {
-                    Some(i)
-                } else {
-                    None
+        Some(Token::The) => match tokens.next() {
+            Some(Token::TypeName(a)) => {
+                let typ = state.get_type(a);
+                let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
+                    if *a == ScopeArg::Typed(typ) {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                });
+
+                let index = list.next().expect("No argument of this type");
+                if list.next() != None {
+                    panic!("ambiguous arg ref")
                 }
-            });
-            let index = list.next().expect("No argument of this type");
-            if list.next() != None {
-                panic!("ambiguous arg ref")
+                Expr::ArgRef(index)
             }
-            Expr::ArgRef(index)
-        }
+            Some(Token::Item) => {
+                let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
+                    if *a == ScopeArg::Item {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                });
+                let index = list.next().expect("No argument of this type");
+                if list.next() != None {
+                    panic!("ambiguous arg ref")
+                }
+                Expr::ArgRef(index)
+            }
+            Some(Token::Symbol(_)) => {
+                tokens.previous();
+                let ptr = parse_multi_symbol_name(state, tokens);
+                expect!(Token::Of, tokens);
+                let val = parse_value(tokens, state, ExprParseAmount::Value, true);
+                let ptr = ptr.property.expect("no function with this name");
+                Expr::Prop {
+                    arg: val.into(),
+                    func: ptr,
+                }
+            }
+            _ => panic!("expected typename"),
+        },
         Some(Token::Number(n)) => (Expr::Number(n)),
         Some(Token::StringLiteral(s)) => (Expr::Str(s)),
         Some(Token::Symbol(_)) => {
@@ -545,15 +584,36 @@ fn parse_value(
                 Some(Token::Each) => {
                     // filter
                     expect!(Token::Item, tokens);
-                    expect!(Token::That, tokens);
-                    expect!(Token::Is, tokens);
-                    let predicate = parse_match(None, tokens, state);
-                    expect!(Token::In, tokens);
-                    let list = parse_value(tokens, state, ExprParseAmount::Value, false);
+                    state.scope_args.push(ScopeArg::Item);
+                    match tokens.next() {
+                        Some(Token::That) => {
+                            expect!(Token::Is, tokens);
+                            let predicate = parse_match(
+                                Some(Expr::ArgRef(state.scope_args.len() - 1)),
+                                tokens,
+                                state,
+                            );
+                            expect!(Token::In, tokens);
+                            let list = parse_value(tokens, state, ExprParseAmount::Value, false);
 
-                    Expr::ListFilter {
-                        list: list.into(),
-                        predicate,
+                            Expr::ListFilter {
+                                list: list.into(),
+                                predicate: PatternExpr::Match(predicate),
+                            }
+                        }
+
+                        Some(Token::In) => {
+                            let list = parse_value(tokens, state, ExprParseAmount::Value, false);
+                            expect!(Token::Where, tokens);
+                            let pat = parse_pattern_expr(tokens, state);
+
+                            Expr::ListFilter {
+                                list: list.into(),
+                                predicate: pat,
+                            }
+                        }
+
+                        _ => panic!("expected `that` or `in`"),
                     }
                 }
                 _ => {
@@ -615,25 +675,12 @@ fn parse_expression(
                 let mut args = current_expr.into_iter().collect::<Vec<_>>();
 
                 let ptr = parse_multi_symbol_name(state, tokens);
-                    
-                
-                if tokens.next() == Some(Token::Of) && args.is_empty() {
-                    let val = parse_value(tokens, state, ExprParseAmount::Value, true);
-                    let ptr = ptr.property
-                        .expect("no function with this name");
-                    Expr::Prop {
-                        arg: val.into(),
-                        func: ptr
-                    }
-                } else {
-                    tokens.previous();
-                    let ptr = ptr.perfectum
-                        .expect("no function with this name");
-                    if state.func_map[ptr.0].0.args.len() == 2 {
-                        args.push(parse_value(tokens, state, ExprParseAmount::Value, true));
-                    }
-                    Expr::Call(Call { func: ptr, args })
+
+                let ptr = ptr.perfectum.expect("no function with this name");
+                if state.func_map[ptr.0].0.args.len() == 2 {
+                    args.push(parse_value(tokens, state, ExprParseAmount::Value, true));
                 }
+                Expr::Call(Call { func: ptr, args })
             }
             Some(Token::Comma) => {
                 if let Some(e) = current_expr {
@@ -706,6 +753,7 @@ fn parse_multi_symbol_name(state: &mut ParseState, tokens: &mut Tokens) -> Named
                     let s = match tokens.next() {
                         Some(Token::Symbol(s)) => s,
                         Some(Token::With) => Symbol::from("with"),
+                        Some(Token::Item) => Symbol::from("item"),
                         a => panic!("expected symbol, found: {:?}", a),
                     };
                     signature.push(s);
@@ -734,10 +782,12 @@ fn parse_match(value: Option<Expr>, tokens: &mut Tokens, state: &mut ParseState)
         tokens.previous();
         false
     };
+
     let mut args = value.into_iter().collect::<Vec<_>>();
     let ptr = parse_multi_symbol_name(state, tokens)
         .pattern
         .expect("no pattern with this name");
+
     if state.pat_map[ptr.0].0.args.len() == 2 {
         args.push(parse_value(
             tokens,
@@ -746,6 +796,7 @@ fn parse_match(value: Option<Expr>, tokens: &mut Tokens, state: &mut ParseState)
             true,
         ));
     }
+
     Match {
         pat: ptr,
         args,
