@@ -72,6 +72,30 @@ macro_rules! builtin_patterns {
     };
 }
 
+macro_rules! builtin_props {
+    {
+        $($($name:ident)+ : of $argtype:ident $argname:ident -> $ret_type:ident => $output:expr,)*
+    } => {
+        pub const BUILTIN_PROPS: &[(&[&str], &str, fn(Value) -> Value)] = &[
+            $(
+                (
+                    &[$(stringify!($name)),+],
+                    stringify!($argtype),
+                    | args | {
+                        
+                        
+                        #[allow(non_snake_case)]
+                        let $argname = check_value!(&args, $argtype);
+                            
+                        
+                        val_variant!($ret_type make $output)
+                    }
+                ),
+            )*
+        ];
+    };
+}
+
 builtin_funcs! {
     fn added with (number A, number B) -> number => A + B,
     fn subtracted by (number A, number B) -> number => A - B,
@@ -96,4 +120,8 @@ builtin_patterns! {
     is greater than (number A, number B) => A > B,
     is less than (number A, number B) => A < B,
     is empty (list A) => A.is_empty(),
+}
+
+builtin_props!{
+    length : of list A -> number => A.len() as f64,
 }

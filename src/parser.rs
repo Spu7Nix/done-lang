@@ -138,6 +138,7 @@ pub fn lex(text: &str) -> Vec<Token> {
 pub struct NamedFunc {
     pub pattern: Option<PatPtr>,
     pub perfectum: Option<FnPtr>,
+    pub property: Option<PropPtr>,
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -181,6 +182,7 @@ impl WordTree {
             .or_insert(WordTree::Leaf(NamedFunc {
                 pattern: None,
                 perfectum: None,
+                property: None,
             })) {
             WordTree::Leaf(l) => l,
             WordTree::Branches(_) => panic!("name too short"),
@@ -195,22 +197,34 @@ pub struct FnPtr(pub usize);
 
 #[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
 pub struct PatPtr(pub usize);
+
+#[derive(PartialEq, Clone, Copy, Hash, Eq, Debug)]
+pub struct PropPtr(pub usize);
+
 #[derive(Debug)]
 pub struct ParseState {
     pub names: WordTree,
     type_count: u32,
     pub type_map: HashMap<Symbol, Ty>,
     pub func_map: Vec<(FuncInfo, FuncContent)>,
+    pub prop_map: Vec<(Ty, PropContent)>,
     pub pat_map: Vec<(FuncInfo, PatContent)>,
     pub scope_args: Vec<Ty>,
 }
 
-use crate::builtin::{BUILTIN_FUNCS, BUILTIN_PATTERNS};
+use crate::builtin::{BUILTIN_FUNCS, BUILTIN_PATTERNS,BUILTIN_PROPS};
 
 #[derive(Debug, Clone)]
 pub enum FuncContent {
     Custom(Expr),
     Builtin(fn(Vec<Value>) -> Value),
+    Uninitialized,
+}
+
+#[derive(Debug, Clone)]
+pub enum PropContent {
+    Custom(Expr),
+    Builtin(fn(Value) -> Value),
     Uninitialized,
 }
 
@@ -228,6 +242,7 @@ impl ParseState {
             type_count: 0,
             type_map: HashMap::new(),
             func_map: Vec::new(),
+            prop_map: Vec::new(),
             scope_args: Vec::new(),
 
             pat_map: Vec::new(),
@@ -260,6 +275,13 @@ impl ParseState {
             let index = out.insert_pat(signature);
             out.pat_map[index.0].1 = PatContent::Builtin(*f);
         }
+
+        for (name, types, f) in BUILTIN_PROPS {
+            let name = name.iter().map(|a| Symbol::from(*a)).collect();
+            let typ = out.get_type(Symbol::from(*types));
+            let index = out.insert_prop(typ, name);
+            out.prop_map[index.0].1 = PropContent::Builtin(*f);
+        }
         out
     }
 
@@ -286,6 +308,13 @@ impl ParseState {
         self.pat_map
             .push((signature.info, PatContent::Uninitialized));
         PatPtr(self.pat_map.len() - 1)
+    }
+
+    fn insert_prop(&mut self, typ: Ty, name: Vec<Symbol>) -> PropPtr {
+        (*self.names.access(name)).property = Some(PropPtr(self.prop_map.len()));
+        self.prop_map
+            .push((typ, PropContent::Uninitialized));
+        PropPtr(self.pat_map.len() - 1)
     }
 }
 
@@ -315,6 +344,10 @@ pub enum Expr {
         list: Box<Expr>,
         predicate: Match,
     },
+    Prop {
+        arg: Box<Expr>,
+        func: PropPtr,
+    }
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -581,14 +614,26 @@ fn parse_expression(
                 tokens.previous();
                 let mut args = current_expr.into_iter().collect::<Vec<_>>();
 
-                let ptr = parse_multi_symbol_name(state, tokens)
-                    .perfectum
-                    .expect("no function with this name");
-
-                if state.func_map[ptr.0].0.args.len() == 2 {
-                    args.push(parse_value(tokens, state, ExprParseAmount::Value, true));
+                let ptr = parse_multi_symbol_name(state, tokens);
+                    
+                
+                if tokens.next() == Some(Token::Of) && args.is_empty() {
+                    let val = parse_value(tokens, state, ExprParseAmount::Value, true);
+                    let ptr = ptr.property
+                        .expect("no function with this name");
+                    Expr::Prop {
+                        arg: val.into(),
+                        func: ptr
+                    }
+                } else {
+                    tokens.previous();
+                    let ptr = ptr.perfectum
+                        .expect("no function with this name");
+                    if state.func_map[ptr.0].0.args.len() == 2 {
+                        args.push(parse_value(tokens, state, ExprParseAmount::Value, true));
+                    }
+                    Expr::Call(Call { func: ptr, args })
                 }
-                Expr::Call(Call { func: ptr, args })
             }
             Some(Token::Comma) => {
                 if let Some(e) = current_expr {

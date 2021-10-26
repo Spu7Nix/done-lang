@@ -12,5 +12,5 @@ fn main() {
 
     let interpreted = interpreter::interpret(parsed);
 
-    println!("output: {:?}", interpreted);
+    println!("output: {}", interpreted);
 }

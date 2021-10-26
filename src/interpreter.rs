@@ -1,6 +1,8 @@
+use std::fmt::Display;
+
 use internment::LocalIntern;
 
-use crate::parser::{Call, Expr, FuncInfo, Match, NamedFunc, PatContent, PatternExpr};
+use crate::parser::{Call, Expr, FuncInfo, Match, NamedFunc, PatContent, PatternExpr, PropContent};
 use crate::parser::{FuncContent, WordTree};
 
 use crate::parser::ParseState;
@@ -10,6 +12,23 @@ pub enum Value {
     Number(f64),
     Str(String),
     List(Vec<Value>),
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Number(n) => write!(f, "{}", n),
+            Value::Str(s) => write!(f, "\"{}\"", s),
+            Value::List(l) => {
+                let mut out = String::from("list of ");
+                for el in &l[..(l.len() - 1)] {
+                    out += &format!("{}, ", el);
+                }
+                out += &format!("and {}", l.last().unwrap());
+                write!(f, "{}", out)
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +156,14 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
                     .collect(),
             )
         }
+        Expr::Prop { arg, func } => {
+            let evaled = evaluate_expr(*arg, state, args);
+            match &state.prop_map[func.0] {
+                (_, PropContent::Builtin(b)) => b(evaled),
+                (_, PropContent::Custom(e)) => evaluate_expr(e.clone(), state, &args),
+                (_, PropContent::Uninitialized) => unreachable!(),
+            }
+        },
     }
 }
 
