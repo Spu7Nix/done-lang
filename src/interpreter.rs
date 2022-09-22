@@ -156,7 +156,7 @@ fn evaluate_expr(expr: Expr, state: &mut State, args: &[Value]) -> Value {
             let evaled = evaluate_expr(*arg, state, args);
             match &state.prop_map[func.0] {
                 (_, PropContent::Builtin(b)) => b(evaled),
-                (_, PropContent::Custom(e)) => evaluate_expr(e.clone(), state, &args),
+                (_, PropContent::Custom(e)) => evaluate_expr(e.clone(), state, &vec![evaled]),
                 (_, PropContent::Uninitialized) => unreachable!(),
             }
         }

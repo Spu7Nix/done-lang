@@ -437,24 +437,18 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
     let backup = tokens.index;
     let first_type = tokens.next();
 
-    let arg_name = if let Some(Token::OpenParen) = tokens.next() {
-        let name = expect_ret!(Symbol, tokens);
-        expect!(Token::CloseParen, tokens);
-        Some(name)
-    } else {
-        tokens.previous();
-        None
-    };
-
     match (first_type, tokens.next()) {
         (Some(Token::TypeName(t)), Some(Token::Is)) => {
             let first_type = state.get_type(t);
+
+            let arg_name = check_for_name(tokens);
+
             let mut def_part = Vec::new();
             loop {
                 match tokens.next() {
                     Some(Token::If) => break,
                     Some(a) => def_part.push(a),
-                    None => panic!("expected type name, symbol or \"is\""),
+                    None => panic!("expected symbol or \"if\""),
                 }
             }
 
@@ -465,8 +459,37 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
 
             state.pat_map[index.0].1 = PatContent::Custom(condition);
         }
+        (Some(Token::The), _) => {
+            tokens.previous();
+            let mut def_part = Vec::new();
+            loop {
+                match tokens.next() {
+                    Some(Token::Of) => break,
+                    Some(a) => def_part.push(a),
+                    None => panic!("expected symbol or \"of\""),
+                }
+            }
+
+            let name = parse_prop_def(&def_part);
+            let type_name = expect_ret!(TypeName, tokens);
+            let typ = state.get_type(type_name);
+
+            let arg_name = check_for_name(tokens);
+            let index = state.insert_prop(typ, name.clone());
+            state.set_scope_args(&FuncSignature {
+                info: FuncInfo {
+                    args: vec![(typ, arg_name)],
+                },
+                name,
+            });
+
+            expect!(Token::Is, tokens);
+            let f = parse_value(tokens, state, ExprParseAmount::Exhaustive, true);
+            state.prop_map[index.0].1 = PropContent::Custom(f);
+        }
         _ => {
             tokens.index = backup;
+
             let mut def_part = Vec::new();
             loop {
                 match tokens.next() {
@@ -497,6 +520,15 @@ fn check_for_name(tokens: &mut Tokens) -> Option<Symbol> {
         tokens.previous();
         None
     }
+}
+
+fn parse_prop_def(def_part: &[Token]) -> Vec<Symbol> {
+    let mut tokens = Tokens::new(def_part);
+    let mut name = Vec::new();
+    while let Some(Token::Symbol(s)) = tokens.next() {
+        name.push(s);
+    }
+    name
 }
 
 fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
@@ -624,7 +656,7 @@ fn parse_value(
                     func: ptr,
                 }
             }
-            _ => panic!("expected typename"),
+            a => panic!("expected typename, got {:?}", a),
         },
         Some(Token::Number(n)) => (Expr::Number(n)),
         Some(Token::StringLiteral(s)) => (Expr::Str(s)),

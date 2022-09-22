@@ -110,6 +110,8 @@ builtin_funcs! {
     fn multiplied by (number A, number B) -> number => A * B,
     fn divided by (number A, number B) -> number => A / B,
 
+    fn infinity () -> number => std::f64::INFINITY,
+
     fn floored (number A) -> number => A.floor(),
     fn ceiled (number A) -> number => A.ceil(),
     fn rounded (number A) -> number => A.round(),

@@ -1,9 +1,7 @@
-List filtered for small values is list of each item in the tail of the List where the item is less than the first item of the List added with 1.
-List filtered for large values is list of each item in the tail of the List where the item is greater than the first item of the List.
+the minimum of List is infinity if the List is empty,
+otherwise the first item of the List if the first item of the List is less than the minimum of the tail of the List,
+otherwise the minimum of the tail of the List.
+the rest of List is list of each item in the List where the item is not equal to the minimum of the List.
+List sorted is new list if the List is empty, otherwise list of the minimum of the List concatenated with: the rest of the List, sorted.
 
-List sorted is new list if the List is empty, 
-otherwise the List filtered for small values, sorted, 
-concatenated with list of the first item of the List
-concatenated with: the List filtered for large values sorted.
-
-output is list of 1000, 10023, 100, 10, 27, 10, 3, and 290 sorted.
+output is list of 4, 1, 2, 3, 4, 5, 6, and 7 sorted.
