@@ -49,6 +49,12 @@ pub enum Token {
     #[token(",")]
     Comma,
 
+    #[token("(")]
+    OpenParen,
+
+    #[token(")")]
+    CloseParen,
+
     #[token("and")]
     And,
 
@@ -64,6 +70,9 @@ pub enum Token {
     #[token("list")]
     List,
 
+    #[token("new")]
+    New,
+
     #[regex(r"[0-9]+(\.[0-9]+)?", | lex | lex.slice().parse::<f64>().unwrap())]
     Number(f64),
 
@@ -73,7 +82,8 @@ pub enum Token {
     })]
     StringLiteral(Symbol),
 
-    #[regex(r#"number|string"#, | lex | Symbol::from(lex.slice()))]
+    // list as a type is capitalized for now lol
+    #[regex(r#"number|string|List"#, | lex | Symbol::from(lex.slice()))]
     TypeName(Symbol),
 
     #[regex(r"([a-zA-Z_][a-zA-Z0-9_]*)|\$", | lex | Symbol::from(lex.slice()))]
@@ -217,7 +227,7 @@ pub struct ParseState {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ScopeArg {
-    Typed(Ty),
+    Typed(Ty, Option<Symbol>),
     Item,
 }
 
@@ -261,7 +271,7 @@ impl ParseState {
                 info: FuncInfo {
                     args: types
                         .iter()
-                        .map(|a| out.get_type(Symbol::from(*a)))
+                        .map(|a| (out.get_type(Symbol::from(*a)), None))
                         .collect(),
                 },
                 name: name.iter().map(|a| Symbol::from(*a)).collect(),
@@ -276,7 +286,7 @@ impl ParseState {
                 info: FuncInfo {
                     args: types
                         .iter()
-                        .map(|a| out.get_type(Symbol::from(*a)))
+                        .map(|a| (out.get_type(Symbol::from(*a)), None))
                         .collect(),
                 },
                 name: name.iter().map(|a| Symbol::from(*a)).collect(),
@@ -307,7 +317,7 @@ impl ParseState {
             .args
             .iter()
             .copied()
-            .map(ScopeArg::Typed)
+            .map(|(a, b)| ScopeArg::Typed(a, b))
             .collect();
     }
 
@@ -380,7 +390,7 @@ pub enum PatternExpr {
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub struct FuncInfo {
-    args: Vec<Ty>,
+    args: Vec<(Ty, Option<Symbol>)>,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -409,13 +419,32 @@ macro_rules! expect {
     };
 }
 
+macro_rules! expect_ret {
+    ($token:ident, $tokens:expr) => {
+        match $tokens.next() {
+            Some(Token::$token(a)) => a,
+            a => panic!(concat!("Expected ", stringify!($token), ", found {:?}"), a),
+        }
+    };
+}
+
 // fn split_at_first<'a>(tokens: &'a [Token], t: Token) -> (&'a [Token<'a>], &'a [Token<'a>]) {
 //     let out = tokens.split_at(tokens.iter().position(|a| *a == t).unwrap());
 //     (out.0, &out.1[1..])
 // }
 
 fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
+    let backup = tokens.index;
     let first_type = tokens.next();
+
+    let arg_name = if let Some(Token::OpenParen) = tokens.next() {
+        let name = expect_ret!(Symbol, tokens);
+        expect!(Token::CloseParen, tokens);
+        Some(name)
+    } else {
+        tokens.previous();
+        None
+    };
 
     match (first_type, tokens.next()) {
         (Some(Token::TypeName(t)), Some(Token::Is)) => {
@@ -429,7 +458,7 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
                 }
             }
 
-            let signature = parse_pat_def(&def_part, state, first_type);
+            let signature = parse_pat_def(&def_part, state, first_type, arg_name);
             let index = state.insert_pat(signature.clone());
             state.set_scope_args(&signature);
             let condition = parse_pattern_expr(tokens, state);
@@ -437,8 +466,7 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
             state.pat_map[index.0].1 = PatContent::Custom(condition);
         }
         _ => {
-            tokens.previous();
-            tokens.previous();
+            tokens.index = backup;
             let mut def_part = Vec::new();
             loop {
                 match tokens.next() {
@@ -449,6 +477,7 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
             }
             // func
             let signature = parse_func_def(&def_part, state);
+            //dbg!(signature.clone(), def_part);
             let index = state.insert_func(signature.clone());
             state.set_scope_args(&signature);
             let f = parse_value(tokens, state, ExprParseAmount::Exhaustive, true);
@@ -459,21 +488,37 @@ fn parse_sentence(tokens: &mut Tokens, state: &mut ParseState) {
     expect!(Token::Period, tokens);
 }
 
+fn check_for_name(tokens: &mut Tokens) -> Option<Symbol> {
+    if let Some(Token::OpenParen) = tokens.next() {
+        let name = expect_ret!(Symbol, tokens);
+        expect!(Token::CloseParen, tokens);
+        Some(name)
+    } else {
+        tokens.previous();
+        None
+    }
+}
+
 fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
     let mut args = Vec::new();
-    if let Token::TypeName(t) = &s[0] {
-        args.push(state.get_type(*t));
+    let mut tokens = Tokens::new(s);
+
+    if let Some(Token::TypeName(t)) = &tokens.next() {
+        args.push((state.get_type(*t), check_for_name(&mut tokens)));
+    } else {
+        tokens.previous();
     }
-    let mut i = args.len(); // is start arg: 1, else 0
+
     let mut name = Vec::new();
-    while let Some(Token::Symbol(s)) = s.get(i) {
-        name.push(*s);
-        i += 1;
+    while let Some(Token::Symbol(s)) = tokens.next() {
+        name.push(s);
     }
 
     if !args.is_empty() {
-        if let Some(Token::TypeName(t)) = &s.get(i) {
-            args.push(state.get_type(*t));
+        if let Some(Token::TypeName(t)) = &tokens.next() {
+            args.push((state.get_type(*t), check_for_name(&mut tokens)));
+        } else {
+            tokens.previous();
         }
     }
 
@@ -484,18 +529,24 @@ fn parse_func_def(s: &[Token], state: &mut ParseState) -> FuncSignature {
     }
 }
 
-fn parse_pat_def(s: &[Token], state: &mut ParseState, first_type: Ty) -> FuncSignature {
-    let mut args = vec![first_type];
-    let mut i = 0;
+fn parse_pat_def(
+    s: &[Token],
+    state: &mut ParseState,
+    first_type: Ty,
+    arg_name: Option<Symbol>,
+) -> FuncSignature {
+    let mut tokens = Tokens::new(s);
+    let mut args = vec![(first_type, arg_name)];
     let mut name = Vec::new();
-    while let Some(Token::Symbol(s)) = s.get(i) {
-        name.push(*s);
-        i += 1;
+    while let Some(Token::Symbol(s)) = tokens.next() {
+        name.push(s);
     }
 
     if !args.is_empty() {
-        if let Some(Token::TypeName(t)) = &s.get(i) {
-            args.push(state.get_type(*t));
+        if let Some(Token::TypeName(t)) = tokens.next() {
+            args.push((state.get_type(t), check_for_name(&mut tokens)));
+        } else {
+            tokens.previous();
         }
     }
 
@@ -531,8 +582,12 @@ fn parse_value(
             Some(Token::TypeName(a)) => {
                 let typ = state.get_type(a);
                 let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
-                    if *a == ScopeArg::Typed(typ) {
-                        Some(i)
+                    if let ScopeArg::Typed(t, _) = *a {
+                        if t == typ {
+                            Some(i)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -573,11 +628,35 @@ fn parse_value(
         },
         Some(Token::Number(n)) => (Expr::Number(n)),
         Some(Token::StringLiteral(s)) => (Expr::Str(s)),
-        Some(Token::Symbol(_)) => {
-            tokens.previous();
-            return parse_expression(None, tokens, state);
+        Some(Token::Symbol(symbol)) => {
+            // check if it's an arg name
+            let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
+                if let ScopeArg::Typed(_, Some(n)) = *a {
+                    if n == symbol {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+
+            if let Some(index) = list.next() {
+                if list.next() != None {
+                    panic!("ambiguous arg ref")
+                }
+                Expr::ArgRef(index)
+            } else {
+                tokens.previous();
+                return parse_expression(None, tokens, state);
+            }
         }
         Some(Token::TypeName(_)) => todo!(),
+        Some(Token::New) => {
+            expect!(Token::List, tokens);
+            Expr::List(Vec::new())
+        }
         Some(Token::List) => {
             expect!(Token::Of, tokens);
             match tokens.next() {
@@ -620,10 +699,24 @@ fn parse_value(
                     tokens.previous();
                     // list literal
                     let mut list = Vec::new();
-                    loop {
-                        list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
-                        match tokens.next() {
-                            Some(Token::Comma) => match tokens.next() {
+                    list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
+                    if let Some(Token::And) | Some(Token::Comma) = tokens.next() {
+                        tokens.previous();
+
+                        loop {
+                            match tokens.next() {
+                                Some(Token::Comma) => match tokens.next() {
+                                    Some(Token::And) => {
+                                        list.push(parse_value(
+                                            tokens,
+                                            state,
+                                            ExprParseAmount::Value,
+                                            false,
+                                        ));
+                                        break;
+                                    }
+                                    _ => tokens.previous(),
+                                },
                                 Some(Token::And) => {
                                     list.push(parse_value(
                                         tokens,
@@ -633,19 +726,12 @@ fn parse_value(
                                     ));
                                     break;
                                 }
-                                _ => tokens.previous(),
-                            },
-                            Some(Token::And) => {
-                                list.push(parse_value(
-                                    tokens,
-                                    state,
-                                    ExprParseAmount::Value,
-                                    false,
-                                ));
-                                break;
+                                _ => panic!("expected comma or `and`"),
                             }
-                            _ => panic!("expected comma or `and`"),
+                            list.push(parse_value(tokens, state, ExprParseAmount::Value, false));
                         }
+                    } else {
+                        tokens.previous();
                     }
 
                     // expect!((Token::Comma | Token::Period), tokens);
@@ -668,9 +754,32 @@ fn parse_expression(
     tokens: &mut Tokens,
     state: &mut ParseState,
 ) -> Expr {
-    loop {
+    'expr_loop: loop {
         current_expr = Some(match tokens.next() {
-            Some(Token::Symbol(_)) => {
+            Some(Token::Symbol(symbol)) => {
+                // if current_expr == None {
+                //     let mut list = state.scope_args.iter().enumerate().filter_map(|(i, a)| {
+                //         if let ScopeArg::Typed(_, Some(n)) = *a {
+                //             if n == symbol {
+                //                 Some(i)
+                //             } else {
+                //                 None
+                //             }
+                //         } else {
+                //             None
+                //         }
+                //     });
+
+                //     dbg!(symbol, &list);
+
+                //     if let Some(index) = list.next() {
+                //         if list.next() != None {
+                //             panic!("ambiguous arg ref")
+                //         }
+                //         current_expr = Some(Expr::ArgRef(index));
+                //         continue 'expr_loop;
+                //     }
+                // }
                 tokens.previous();
                 let mut args = current_expr.into_iter().collect::<Vec<_>>();
 

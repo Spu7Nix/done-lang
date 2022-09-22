@@ -1,0 +1,9 @@
+// does not interpret (yet)
+// theoretical syntax, look in fib.done for a program that does run
+
+list of numbers (A) sorted is the list of each item in the tail of A where the item is lesser or equal to the first item of A, sorted, concatenated with: list of the first item of A, concatenated with: the list of each item in the tail of A where the item is greater than the first item of A, sorted.
+
+
+output is list of 1, 2, 3, 4, 5, 6, 7, 8, 9, and 10, sorted.
+
+

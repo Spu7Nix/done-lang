@@ -8,6 +8,10 @@ macro_rules! check_value {
             panic!("expected {}", stringify!($type))
         }
     };
+
+    ($val:expr) => {
+        $val
+    };
 }
 
 macro_rules! val_variant {
@@ -54,18 +58,18 @@ macro_rules! builtin_funcs {
 
 macro_rules! builtin_patterns {
     {
-        $(is $($name:ident)+ ($($argtype:ident $argname:ident),*) => $output:expr,)*
+        $(is $($name:ident)+ ($($($argtype:ident)? : $argname:ident),*) => $output:expr,)*
     } => {
         pub const BUILTIN_PATTERNS: &[(&[&str], &[&str], fn(Vec<Value>) -> bool)] = &[
             $(
                 (
                     &[$(stringify!($name)),+],
-                    &[$(stringify!($argtype)),*],
+                    &[$(stringify!($($argtype)?)),*],
                     | args | {
                         let mut i = 0;
                         $(
                             #[allow(non_snake_case)]
-                            let $argname = check_value!(&args[i], $argtype);
+                            let $argname = check_value!(&args[i] $(, $argtype)?);
                             i += 1;
                         )*
                         $output
@@ -117,16 +121,19 @@ builtin_funcs! {
         let strings = A.iter().map(|el| if let Value::Str(s) = el { s.clone() } else { panic!("expected string") }).collect::<Vec<_>>();
         strings.join(B)
     },
+
+    fn concatenated with (list A, list B) -> list => A.iter().chain(B.iter()).cloned().collect(),
 }
 
 builtin_patterns! {
-    is equal to (number A, number B) => (A - B).abs() < f64::EPSILON,
-    is greater than (number A, number B) => A > B,
-    is less than (number A, number B) => A < B,
-    is empty (list A) => A.is_empty(),
+    is equal to (: A, : B) => A == B,
+    is greater than (number: A, number: B) => A > B,
+    is less than (number: A, number: B) => A < B,
+    is empty (list: A) => A.is_empty(),
 }
 
 builtin_props! {
     length : of list A -> number => A.len() as f64,
     first item : of list A => A.first().expect("no first element in empty list").clone(),
+    tail : of list A -> list => A[1..].to_vec(),
 }

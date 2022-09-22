@@ -41,3 +41,4 @@ input processed := input converted to string split by "," with each item convert
 
 list of number summed := the list reduced to item added with next item.
 
+// filter: list of each item of [list] where [condition containing `item`]

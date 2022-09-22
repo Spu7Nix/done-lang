@@ -9,7 +9,7 @@ use crate::parser::{FuncContent, WordTree};
 
 use crate::parser::ParseState;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Number(f64),
     Str(String),
@@ -22,12 +22,16 @@ impl Display for Value {
             Value::Number(n) => write!(f, "{}", n),
             Value::Str(s) => write!(f, "\"{}\"", s),
             Value::List(l) => {
-                let mut out = String::from("list of ");
-                for el in &l[..(l.len() - 1)] {
-                    out += &format!("{}, ", el);
+                if l.is_empty() {
+                    write!(f, "new list")
+                } else {
+                    let mut out = String::from("list of ");
+                    for el in &l[..(l.len() - 1)] {
+                        out += &format!("{}, ", el);
+                    }
+                    out += &format!("and {}", l.last().unwrap());
+                    write!(f, "{}", out)
                 }
-                out += &format!("and {}", l.last().unwrap());
-                write!(f, "{}", out)
             }
         }
     }
